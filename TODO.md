@@ -16,3 +16,4 @@
 - [ ] worktrees babyyyy
 - [ ] retry on error?
 - [ ] better git integration
+- [ ] cmd line, like my nvim `:`

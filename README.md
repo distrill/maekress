@@ -49,13 +49,13 @@ npm start
 
 Inside the TUI, use `Enter` to submit a message, `Ctrl+J` for a newline, `Esc`
 to interrupt an active model turn or shell command, and `Ctrl+C` to quit.
-The footer shows `model@provider`, the last provider-reported input token count
-(and model context limit when available), and activity including a working
-indicator. In a Git repository, a second line shows the cwd, compact file
-counts (`m` modified, `a` added/untracked, `d` deleted; zeros omitted) or
-`✓ clean`, then the branch name. Token count
-is the last request size, not cumulative usage or a prediction for the next
-turn. Unknown values are hidden rather than estimated. Use `/help` for key hints. Customize or extend these small modules in `src/status.ts`:
+The first footer line shows `user@host`, model/provider, and `ctx: N%` when both
+the provider-reported input token count and model context limit are known. An
+animated working icon appears at the end of that line only while busy. In a Git
+repository, a second line shows the working directory (with home abbreviated to `~`), compact file counts (`'` modified, `-` deleted, `+` added/untracked; zeros
+omitted) or `✓ clean`, then
+the branch name. Context percentage uses the last request size, not cumulative
+usage or a prediction for the next turn. Unknown values are hidden rather than estimated. Use `/help` for key hints. Customize or extend these small modules in `src/status.ts`:
 add a function to `statusModules` and its id to `statusOrder`, or reorder/remove
 ids there. Git status refreshes in the background. The harness currently sends
 the full saved conversation each turn and does not compact it; provider usage
