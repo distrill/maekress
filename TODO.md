@@ -17,3 +17,4 @@
 - [ ] retry on error?
 - [ ] better git integration
 - [ ] cmd line, like my nvim `:`
+- [ ] timer showing how long worked

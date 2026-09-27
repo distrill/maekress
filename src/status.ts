@@ -15,7 +15,6 @@ export type StatusState = {
   cwd: string;
   provider: string;
   model: string;
-  activity?: string;
   contextUsed?: number;
   contextLimit?: number;
   git?: string;
@@ -34,12 +33,10 @@ export const statusModules: Record<string, StatusModule> = {
     ? "ctx: 0%"
     : state.contextLimit === undefined || state.contextLimit <= 0
       ? undefined : `ctx: ${Math.round(state.contextUsed / state.contextLimit * 100)}%`,
-  activity: (state) => state.activity,
 };
 
 // Git gets its own line so long paths and branches don't crowd out the main status.
-// Keep conditional activity last so showing the working spinner never moves other fields.
-export const statusOrder = ["identity", "model", "context", "activity"];
+export const statusOrder = ["identity", "model", "context"];
 
 export function formatStatus(state: StatusState): string {
   const main = statusOrder.map((id) => statusModules[id]?.(state)).filter(Boolean).join("  ·  ");

@@ -49,6 +49,10 @@ npm start
 
 Inside the TUI, use `Enter` to submit a message, `Ctrl+J` for a newline, `Esc`
 to interrupt an active model turn or shell command, and `Ctrl+C` to quit.
+The scrollback shows right-aligned user boxes, left-aligned assistant boxes, and
+single-line tool summaries instead of tool arguments and results. Resuming a
+session reconstructs this compact view from saved messages; full tool results
+remain in the session for the model.
 The first footer line shows `user@host`, model/provider, and `ctx: N%` when both
 the provider-reported input token count and model context limit are known. An
 animated working icon appears at the end of that line only while busy. In a Git

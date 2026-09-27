@@ -28,7 +28,6 @@ test("Git footer shows cwd, clean state, branch, and counts files once", async (
     const line = formatStatus({ cwd, provider: "Codex", model: "model", git: await readGitStatus(cwd) });
     const identity = `${userInfo().username}@${hostname()}`;
     assert.equal(line, `${identity}  ·  model | Codex  ·  ctx: 0%\n${cwd}  ·  2' 1- 1+  ·  my-long-branch-name`);
-    assert.equal(formatStatus({ cwd, provider: "Codex", model: "model", activity: "⠋" }), `${identity}  ·  model | Codex  ·  ctx: 0%  ·  ⠋`);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -43,7 +42,6 @@ test("main status shows model and context, defaulting to zero before usage arriv
   assert.equal(formatStatus({ ...state, contextUsed: 0, contextLimit: 1000 }), `${prefix}  ·  ctx: 0%`);
   assert.equal(formatStatus({ ...state, contextUsed: 100 }), prefix);
   assert.equal(formatStatus({ ...state, contextUsed: 100, contextLimit: 0 }), prefix);
-  assert.equal(formatStatus({ ...state, activity: "⠋" }), `${prefix}  ·  ctx: 0%  ·  ⠋`);
 });
 
 test("Git footer abbreviates only paths inside home", () => {
