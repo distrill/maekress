@@ -1,0 +1,21 @@
+# Installed dependencies and generated output
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+auth.json
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Editor and OS files
+.DS_Store
+.vscode/
+.idea/

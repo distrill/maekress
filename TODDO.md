@@ -1,0 +1,11 @@
+- [ ] rm 12 tool limit
+- [ ] auto execute commands, ask for confirmation only when they look _sketchy guy_
+- [ ] linebreak on word
+- [ ] spinner to show "model working"
+- [ ] show context / model / etc on bottom status bar
+- [ ] let me interrupt commands in flight \[esc\]
+- [ ] let me queue messages
+- [ ] render markdown
+- [ ] general "make it look good"
+- [ ] image paste
+- [ ] collapse long pastes?

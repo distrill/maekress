@@ -1,0 +1,18 @@
+- [x] rm 12 tool limit
+- [x] auto execute commands, ask for confirmation only when they look _sketchy guy_
+- [x] linebreak on word
+- [x] spinner to show "model working"
+- [x] let me interrupt commands in flight \[esc\]
+- [x] show cwd / git / model / activity on bottom status bar (context usage pending provider support)
+- [x] show last provider-reported input tokens and model context limit when available
+- [ ] implement compaction/context exhaustion handling
+- [ ] let me queue messages
+- [ ] render markdown
+- [ ] general "make it look good"
+- [ ] interactive scroll back, show hide thinking etc, expand something to full screen (for terminal multiline copy)
+- [ ] image paste
+- [ ] up to go through previous messages
+- [ ] too many lines in the input box scrolls the input. that's weird, should grow to accommodate instead
+- [ ] worktrees babyyyy
+- [ ] retry on error?
+- [ ] better git integration
