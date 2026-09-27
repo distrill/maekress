@@ -11,8 +11,10 @@ import { loadPreferences, savePreferences, type Preferences } from "./preference
 import { executeTool, getToolDefinitions } from "./tools.ts";
 import { newSession, saveSession, type Session } from "./sessions.ts";
 import { contextWarning, formatStatus, readGitStatus, type ContextWarning, type StatusState } from "./status.ts";
-import { chatBox, glance, historyEntries, toolGlance } from "./transcript.ts";
+import { chatBox, elapsed, glance, historyEntries, ToolGlanceBatch, toolTarget } from "./transcript.ts";
 import { footerLayout } from "./footer-layout.ts";
+import { imageLabel, imageMarker, readClipboardImage } from "./images.ts";
+import type { ImageAttachment } from "./providers/types.ts";
 
 const systemPrompt = "You are a practical creative coding assistant helping the user make games. Use the available project tools when they help. Execute routine in-project edits and commands without asking first. Check in before risky, destructive, security-sensitive, or unclear actions; the harness may also request approval for those. Explain your work clearly.";
 
@@ -140,6 +142,25 @@ export async function startTui(resumed?: Session): Promise<void> {
     gap: 0,
   });
 
+  // Split-footer redraws only the footer; reserve space above the composer for the palette.
+  const paletteSpace = new BoxRenderable(renderer, { id: "palette-space", width: "100%", height: 0, flexShrink: 0 });
+  const paletteBox = new BoxRenderable(renderer, {
+    id: "command-palette", position: "absolute", zIndex: 10, width: 48, height: 5,
+    border: true, borderStyle: "rounded", borderColor: "#8BD5CA",
+    title: "Command", titleColor: "#8BD5CA", flexDirection: "column", visible: false,
+  });
+  const paletteEditor = new TextareaRenderable(renderer, {
+    id: "palette-editor", width: "100%", height: 1, wrapMode: "none",
+    placeholder: "Search commands…", placeholderColor: "#747C91",
+    textColor: "#E5E9F0", cursorColor: "#8BD5CA",
+    backgroundColor: "transparent", focusedBackgroundColor: "transparent",
+  });
+  const paletteMatches = new TextRenderable(renderer, {
+    content: "", fg: "#A6ADC8", width: "100%", height: 1, wrapMode: "none",
+  });
+  paletteBox.add(paletteEditor);
+  paletteBox.add(paletteMatches);
+
   const inputWidth = () => Math.max(1, renderer.width - 2);
   const inputBox = new BoxRenderable(renderer, {
     id: "input-box",
@@ -157,7 +178,8 @@ export async function startTui(resumed?: Session): Promise<void> {
     id: "queued-messages", width: "100%", height: 0, flexDirection: "column",
     alignItems: "center", overflow: "hidden",
   });
-  const queuedMessages: string[] = [];
+  const queuedMessages: Array<{ content: string; images?: ImageAttachment[] }> = [];
+  let draftImages: ImageAttachment[] = [];
   const queuedCards: Array<{ box: BoxRenderable; text: TextRenderable }> = [];
   function renderQueue(): void {
     for (const card of queuedCards) queuedView.remove(card.box);
@@ -169,7 +191,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         borderColor: "#747C91", flexShrink: 0,
       });
       const text = new TextRenderable(renderer, {
-        content: message, fg: "#E5E9F0", width: "100%", wrapMode: "word",
+        content: imageLabel(message), fg: "#E5E9F0", width: "100%", wrapMode: "word",
       });
       box.add(text);
       queuedView.add(box);
@@ -185,8 +207,10 @@ export async function startTui(resumed?: Session): Promise<void> {
     border: true,
     borderStyle: "rounded",
     borderColor: "#F9E2AF",
-    title: "Permission",
+    title: "Permission (y/n)",
     titleColor: "#F9E2AF",
+    flexDirection: "column",
+    overflow: "hidden",
     visible: false,
   });
   const approvalText = new TextRenderable(renderer, {
@@ -195,12 +219,22 @@ export async function startTui(resumed?: Session): Promise<void> {
     width: "100%",
     height: 2,
     wrapMode: "word",
+    flexShrink: 0,
+  });
+  const approvalHint = new TextRenderable(renderer, {
+    content: "(y/n) · Esc stop", fg: "#F9E2AF", width: "100%", height: 1,
+    flexShrink: 0,
   });
   approvalBox.add(approvalText);
+  approvalBox.add(approvalHint);
 
   // Keep activity directly against scrollback, with a blank row below it to
   // separate it from the composer. Reserve both rows even when idle so the
   // split footer does not move mid-turn and cover the activity text.
+  const pendingToolView = new TextRenderable(renderer, {
+    content: "", fg: transcriptColors.tool, width: "100%", height: 0,
+    flexShrink: 0, wrapMode: "none",
+  });
   const activityView = new TextRenderable(renderer, {
     content: "",
     fg: "#E5E9F0",
@@ -236,8 +270,25 @@ export async function startTui(resumed?: Session): Promise<void> {
   let turnController: AbortController | undefined;
   let resolveToolConfirmation: ((approved: boolean) => void) | undefined;
   let workingTimer: ReturnType<typeof setInterval> | undefined;
+  const toolBatch = new ToolGlanceBatch();
+  function pendingToolText(): string {
+    // Keep the full glance indent; the live footer preview needs it to align
+    // with the settled tool lines in scrollback.
+    // The footer already has one cell of horizontal padding; scrollback does not.
+    return toolBatch.preview(columns())?.trimEnd().replace(/^ /, "") ?? "";
+  }
+  function updatePendingTool(): void {
+    pendingToolView.content = pendingToolText();
+    scheduleComposerResize();
+  }
+  function flushToolBatch(): void {
+    const text = toolBatch.flush(columns());
+    if (text) writeScrollback(text, transcriptColors.tool);
+    updatePendingTool();
+  }
   let workingPhase = "";
   let workingFrame = 0;
+  let lastMessageAt: number | undefined;
   let notice = "ready";
   let warnedContext: ContextWarning = 0;
   let statusClosed = false;
@@ -252,7 +303,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     status.content = formatStatus(statusState);
     status.fg = contextWarning(statusState) >= 90 ? "#F38BA8" : contextWarning(statusState) >= 85 ? "#F9E2AF" : "#8BD5CA";
     activityView.content = workingTimer
-      ? `${frames[workingFrame++ % frames.length]} ${workingPhase} · Esc to stop`
+      ? `${frames[workingFrame++ % frames.length]} ${workingPhase} · Esc to stop${lastMessageAt === undefined ? "" : ` · ${elapsed(Date.now() - lastMessageAt)}`}`
       : "";
     inputBox.borderColor = busy || notice !== "ready" ? "#747C91" : "#8BD5CA";
   }
@@ -291,6 +342,106 @@ export async function startTui(resumed?: Session): Promise<void> {
   let completionStart = 0;
   let completionSuppressedInput: string | undefined;
   let pendingComposerResize: ReturnType<typeof setImmediate> | undefined;
+  const paletteCommands = ["help", "new", "retry", "paste-image", "login", "provider", "model"];
+  let paletteOpen = false;
+  let paletteChoices: Completion[] = [];
+  let paletteIndex = 0;
+  let paletteGeneration = 0;
+  function paintPalette(): void {
+    const count = Math.min(5, paletteChoices.length);
+    const start = Math.max(0, Math.min(paletteIndex - 3, paletteChoices.length - count));
+    paletteMatches.content = paletteChoices.length
+      ? paletteChoices.slice(start, start + count).map((choice, i) =>
+        `${start + i === paletteIndex ? "›" : " "} ${choice.label}`).join("\n")
+      : "  No matches";
+    paletteMatches.height = Math.max(1, count);
+    paletteBox.height = paletteMatches.height + 3;
+    scheduleComposerResize();
+  }
+  async function updatePalette(): Promise<void> {
+    if (!paletteOpen) return;
+    const generation = ++paletteGeneration;
+    const input = paletteEditor.plainText.trimStart().replace(/^\//, "");
+    const space = input.indexOf(" ");
+    let choices: Completion[];
+    if (space < 0) {
+      choices = matchChoices(input, paletteCommands.map((name) => ({ insert: name, label: name })));
+    } else {
+      const command = input.slice(0, space);
+      const query = input.slice(space + 1).trimStart();
+      if (command === "provider") {
+        choices = matchChoices(query, [
+          { insert: "provider codex", label: "codex · OpenAI Codex" },
+          { insert: "provider openrouter", label: "openrouter · OpenRouter" },
+        ]);
+      } else if (command === "login") {
+        choices = matchChoices(query, ["openai_codex", "openrouter_api_key"].map((name) => ({
+          insert: `login ${name}`, label: name,
+        })));
+      } else if (command === "model") {
+        const provider = getProvider(activeProvider);
+        let catalog = modelCatalogs.get(provider.id);
+        if (!catalog) {
+          catalog = provider.listModels().catch(() => [{ id: provider.defaultModel, name: provider.defaultModel }]);
+          modelCatalogs.set(provider.id, catalog);
+        }
+        const models = await catalog;
+        choices = matchChoices(query, models.map((model) => ({
+          insert: `model ${model.id}`, label: model.id === model.name ? model.id : `${model.id} · ${model.name}`,
+        })));
+      } else choices = [];
+    }
+    if (!paletteOpen || generation !== paletteGeneration) return;
+    paletteChoices = choices;
+    paletteIndex = 0;
+    paintPalette();
+  }
+  paletteEditor.onContentChange = () => { void updatePalette(); };
+  function closePalette(): void {
+    paletteOpen = false;
+    paletteGeneration++;
+    paletteBox.visible = false;
+    paletteEditor.blur();
+    composer.focus();
+    scheduleComposerResize();
+  }
+  function openPalette(): void {
+    if (paletteOpen || resolveToolConfirmation) return;
+    paletteOpen = true;
+    composer.blur();
+    paletteEditor.setText("");
+    paletteBox.visible = true;
+    paletteEditor.focus();
+    void updatePalette();
+    scheduleComposerResize();
+  }
+  paletteEditor.onKeyDown = (key) => {
+    if (key.name === "escape" || key.name === "esc") {
+      key.preventDefault();
+      closePalette();
+    } else if (key.name === "up" || key.name === "down") {
+      key.preventDefault();
+      if (paletteChoices.length) {
+        paletteIndex = (paletteIndex + (key.name === "down" ? 1 : -1) + paletteChoices.length) % paletteChoices.length;
+        paintPalette();
+      }
+    } else if (key.name === "tab" || key.name === "return") {
+      key.preventDefault();
+      const raw = paletteEditor.plainText.trim().replace(/^\//, "");
+      const selected = paletteChoices[paletteIndex]?.insert;
+      const command = raw.includes(" ") ? raw.split(" ")[0] : selected;
+      if (!command) return;
+      const needsArgument = ["login", "provider", "model"].includes(command);
+      if (key.name === "tab" || (needsArgument && !raw.includes(" "))) {
+        paletteEditor.setText(`${selected ?? command}${needsArgument && !(selected ?? command).includes(" ") ? " " : ""}`);
+        paletteEditor.cursorOffset = paletteEditor.plainText.length;
+        return;
+      }
+      const action = selected ?? raw;
+      closePalette();
+      void handleInput(`/${action}`);
+    }
+  };
   // OpenTUI emits content-changed while rendering. Resizing the split footer
   // inside that pass leaves the editor at its old viewport until another
   // render (often the next keypress). Lay out after the pass instead.
@@ -347,7 +498,7 @@ export async function startTui(resumed?: Session): Promise<void> {
 
   function confirmTool(message: string): Promise<boolean> {
     stopWorking();
-    approvalText.content = `${message}\n(y/n) · Esc stop`;
+    approvalText.content = message;
     approvalText.width = Math.max(1, renderer.width - 4);
     approvalBox.visible = true;
     composer.blur();
@@ -406,6 +557,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   function resizeComposer(): void {
     if (!composer) return;
     inputBox.width = inputWidth();
+    if (toolBatch.count) pendingToolView.content = pendingToolText();
     for (const card of queuedCards) card.box.width = Math.max(1, inputWidth() - 2);
     const rows = process.stdout.rows || 24;
     const editorWidth = Math.max(1, inputWidth() - 4);
@@ -414,7 +566,8 @@ export async function startTui(resumed?: Session): Promise<void> {
     let permissionLines = 0;
     if (approvalBox.visible) {
       approvalText.width = Math.max(1, renderer.width - 4);
-      permissionLines = Math.max(2, approvalText.virtualLineCount) + 2;
+      // One dedicated row for the answer keys, even if the message wraps.
+      permissionLines = Math.max(1, approvalText.virtualLineCount) + 3;
     }
     const queuedLines = queuedCards.map(({ box, text }) => {
       const width = Math.max(1, inputWidth() - 2 - 4);
@@ -423,17 +576,28 @@ export async function startTui(resumed?: Session): Promise<void> {
       text.height = height - 1;
       return height;
     }).reduce((sum, height) => sum + height, 0);
-    const layout = footerLayout(rows, lines, suggestionLines, permissionLines, queuedLines);
+    const layout = footerLayout(rows, lines, suggestionLines, permissionLines, queuedLines, toolBatch.count ? 1 : 0);
     queuedView.height = layout.queued;
+    pendingToolView.height = layout.pendingTool;
     activityView.height = layout.activity;
     activitySpacer.height = layout.spacer;
     status.height = layout.status;
     completionView.height = layout.suggestions;
     approvalBox.height = layout.permission;
-    if (approvalBox.visible) approvalText.height = Math.max(1, layout.permission - 2);
+    if (approvalBox.visible) {
+      approvalHint.height = layout.permission >= 3 ? 1 : 0;
+      approvalText.height = Math.max(0, layout.permission - 2 - approvalHint.height);
+      approvalHint.visible = layout.permission >= 3;
+      approvalText.visible = approvalText.height > 0;
+    }
     composer.height = layout.editor;
     inputBox.height = layout.editor + layout.inputBorder;
-    if (renderer.footerHeight !== layout.height) renderer.footerHeight = layout.height;
+    const extra = paletteOpen ? Math.min(Math.max(0, rows - layout.height - 1), Math.max(8, Math.floor(rows / 2) - layout.height)) : 0;
+    paletteSpace.height = extra;
+    paletteBox.width = Math.min(64, Math.max(12, renderer.width - 4));
+    paletteBox.left = Math.max(0, Math.floor((renderer.width - paletteBox.width) / 2));
+    paletteBox.top = Math.max(0, extra - paletteBox.height);
+    if (renderer.footerHeight !== layout.height + extra) renderer.footerHeight = layout.height + extra;
   }
 
   function renderCompletions(): void {
@@ -462,10 +626,10 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
     completionSuppressedInput = undefined;
     if (busy || !input.startsWith("/")) return showCompletions([], input);
-    const commandNames = ["help", "login", "model", "provider", "new", "retry"];
+    const commandNames = ["help", "login", "model", "provider", "new", "retry", "paste-image"];
     const firstSpace = input.indexOf(" ");
     if (firstSpace < 0) {
-      return showCompletions(matchChoices(input.slice(1), commandNames.map((name) => ({ insert: `/${name}${["help", "new", "retry"].includes(name) ? "" : " "}`, label: `/${name}` }))), input);
+      return showCompletions(matchChoices(input.slice(1), commandNames.map((name) => ({ insert: `/${name}${["help", "new", "retry", "paste-image"].includes(name) ? "" : " "}`, label: `/${name}` }))), input);
     }
     const command = input.slice(0, firstSpace);
     const query = input.slice(firstSpace + 1).trimStart();
@@ -497,20 +661,25 @@ export async function startTui(resumed?: Session): Promise<void> {
     showCompletions([], input);
   }
 
-  async function handleInput(text: string, fromQueue = false): Promise<void> {
+  async function handleInput(text: string, fromQueue = false, images: ImageAttachment[] = []): Promise<void> {
     const input = text.trim();
-    if (!input) return;
+    if (!input && !images.length) return;
+    if (!fromQueue && !input.startsWith("/")) lastMessageAt = Date.now();
     if (busy || (queuedMessages.length && !fromQueue)) {
       if (input.startsWith("/")) {
         writeGlance("Commands are unavailable during a turn; finish or stop it first");
         return;
       }
-      queuedMessages.push(input);
+      queuedMessages.push({ content: input, images });
       renderQueue();
       return;
     }
     if (input === "/help") {
-      writeGlance("Commands: /new · /retry · /login · /provider · /model · /help; Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit");
+      writeGlance("Commands: Ctrl+K palette · /new · /retry · /paste-image · /login · /provider · /model · /help; Ctrl+V image · Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit");
+      return;
+    }
+    if (input === "/paste-image" && !images.length) {
+      await pasteImage();
       return;
     }
     if (input === "/new") {
@@ -651,8 +820,9 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
     const turnStart = messages.length;
     if (!retry) {
-      messages.push({ role: "user", content: input });
-      writeScrollback(chatBox("user", input, columns()), transcriptColors.user);
+      const userMessage = { role: "user" as const, content: input, ...(images.length ? { images } : {}) };
+      messages.push(userMessage);
+      writeScrollback(chatBox("user", imageLabel(userMessage), columns()), transcriptColors.user);
     }
     retryable = false;
     const controller = new AbortController();
@@ -678,6 +848,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         warnContext();
         const answer = turnText.join("");
         if (!result.toolCalls.length) {
+          flushToolBatch();
           stopWorking();
           messages.push({ role: "assistant", content: answer });
           await checkpoint();
@@ -688,11 +859,13 @@ export async function startTui(resumed?: Session): Promise<void> {
 
         messages.push({ role: "assistant", content: answer, toolCalls: result.toolCalls });
         if (answer) {
+          flushToolBatch();
           writeScrollback(chatBox("assistant", answer, columns(), provider.label), transcriptColors.assistant);
         }
         for (const call of result.toolCalls) {
           controller.signal.throwIfAborted();
           startWorking(`running ${call.name}`);
+          const toolStartedAt = performance.now();
           let toolResult: string;
           try {
             const parsed = JSON.parse(call.arguments) as unknown;
@@ -712,12 +885,17 @@ export async function startTui(resumed?: Session): Promise<void> {
           }
           controller.signal.throwIfAborted();
           messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: toolResult });
-          writeScrollback(toolGlance(call, toolResult, columns()), transcriptColors.tool);
+          // Clear the previous preview before committing it to scrollback.
+          // Otherwise the same line briefly appears in both places.
+          if (toolBatch.count && toolBatch.label !== toolTarget(call)) flushToolBatch();
+          toolBatch.add(call, toolResult, columns(), performance.now() - toolStartedAt);
+          updatePendingTool();
         }
         void readGitStatus(statusState.cwd).then((git) => { statusState.git = git; renderStatus(); });
         await checkpoint();
       }
     } catch (error) {
+      flushToolBatch();
       if (controller.signal.aborted) {
         // Drop the unfinished assistant/tool exchange, but keep completed rounds and the user request.
         const pending = messages.findLastIndex((message) => message.role === "assistant" && message.toolCalls?.length);
@@ -746,6 +924,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         setNotice("Provider error · see scrollback");
       }
     } finally {
+      flushToolBatch();
       stopWorking();
       turnController = undefined;
       busy = false;
@@ -757,9 +936,29 @@ export async function startTui(resumed?: Session): Promise<void> {
       // A cancelled or failed turn must not strand its queued follow-ups.
       // Start the next send synchronously, claiming busy before any await.
       if (!statusClosed && queuedMessages.length) {
-        void handleInput(queuedMessages[0]!, true);
+        const next = queuedMessages[0]!;
+        void handleInput(next.content, true, next.images);
       }
     }
+  }
+
+  async function pasteImage(): Promise<void> {
+    try {
+      const image = await readClipboardImage();
+      const marker = imageMarker(draftImages.length);
+      draftImages.push(image);
+      composer.insertText(marker);
+      updateDraftImages();
+      writeGlance(`Attached ${image.mimeType} image (${Math.round(image.data.length * 3 / 4 / 1024)} KiB) · Enter to send`);
+    } catch (error) {
+      writeGlance(`Image paste failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function updateDraftImages(): void {
+    inputBox.title = draftImages.length ? `You · ${draftImages.length} image${draftImages.length === 1 ? "" : "s"} attached` : "You";
+    composer.placeholder = "";
+    renderStatus();
   }
 
   composer = new TextareaRenderable(renderer, {
@@ -783,12 +982,23 @@ export async function startTui(resumed?: Session): Promise<void> {
     ],
     onSubmit: () => {
       const message = composer.plainText;
+      if (!message.trim() && !draftImages.length) return;
+      // Slash commands manage the draft but must not silently consume its images.
+      const command = message.trim().startsWith("/");
+      const images = command ? [] : draftImages;
       composer.setText("");
-      void handleInput(message);
+      if (!command) {
+        draftImages = [];
+        updateDraftImages();
+      }
+      void handleInput(message, false, images);
     },
   });
   renderer.keyInput.on("keypress", (key) => {
     if (resolveToolConfirmation) {
+      // Global handlers run before the editor. Consume the answer before
+      // refocusing it so the same key cannot be inserted into the draft.
+      key.preventDefault();
       if (key.name !== "y" && key.name !== "n" && key.name !== "escape" && key.name !== "esc") return;
       const resolve = resolveToolConfirmation;
       resolveToolConfirmation = undefined;
@@ -806,6 +1016,18 @@ export async function startTui(resumed?: Session): Promise<void> {
         composer.focus();
         resolve(approved);
       }
+      return;
+    }
+    if (key.name === "k" && key.ctrl) {
+      key.preventDefault();
+      if (paletteOpen) closePalette();
+      else openPalette();
+      return;
+    }
+    if (paletteOpen) return;
+    if (key.name === "v" && key.ctrl) {
+      key.preventDefault();
+      void pasteImage();
       return;
     }
     if ((key.name === "escape" || key.name === "esc") && turnController) {
@@ -850,7 +1072,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       }
       if (currentInput.startsWith("/") && !currentInput.includes(" ")) {
         key.preventDefault();
-        if (["/help", "/new", "/retry"].includes(choice.insert)) {
+        if (["/help", "/new", "/retry", "/paste-image"].includes(choice.insert)) {
           composer.setText("");
           completionChoices = [];
           void handleInput(choice.insert);
@@ -870,6 +1092,8 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
   };
 
+  footer.add(paletteSpace);
+  footer.add(pendingToolView);
   footer.add(activityView);
   footer.add(activitySpacer);
   footer.add(completionView);
@@ -879,6 +1103,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   footer.add(inputBox);
   footer.add(status);
   renderer.root.add(footer);
+  renderer.root.add(paletteBox);
   renderer.on("resize", resizeComposer);
   resizeComposer();
   composer.focus();

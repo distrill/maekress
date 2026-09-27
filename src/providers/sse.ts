@@ -1,12 +1,41 @@
-export async function* readSseData(response: Response, signal: AbortSignal): AsyncGenerator<string> {
+// Fail a stalled connection, but allow long responses as long as bytes keep arriving.
+// This also covers waiting for the initial HTTP response.
+export async function withStreamIdleTimeout<T>(
+  signal: AbortSignal,
+  run: (signal: AbortSignal, activity: () => void) => Promise<T>,
+  idleMs = 120_000,
+): Promise<T> {
+  const controller = new AbortController();
+  const combined = AbortSignal.any([signal, controller.signal]);
+  let timer: ReturnType<typeof setTimeout>;
+  const activity = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(new Error(`Provider stream stalled for ${idleMs / 1000}s without data.`)), idleMs);
+  };
+  activity();
+  try {
+    return await run(combined, activity);
+  } catch (error) {
+    if (controller.signal.aborted && !signal.aborted) throw controller.signal.reason;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function* readSseData(response: Response, signal: AbortSignal, activity: () => void = () => {}): AsyncGenerator<string> {
   if (!response.body) throw new Error("Provider returned an empty stream.");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const cancel = () => { void reader.cancel().catch(() => {}); };
+  signal.addEventListener("abort", cancel, { once: true });
   try {
     while (true) {
       if (signal.aborted) throw new Error("Request cancelled.");
       const { value, done } = await reader.read();
+      if (signal.aborted) throw signal.reason;
+      if (value?.length) activity();
       buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
       buffer = buffer.replace(/\r\n/g, "\n");
       let boundary = buffer.indexOf("\n\n");
@@ -24,7 +53,8 @@ export async function* readSseData(response: Response, signal: AbortSignal): Asy
       if (data && data !== "[DONE]") yield data;
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    signal.removeEventListener("abort", cancel);
+    if (!signal.aborted) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }

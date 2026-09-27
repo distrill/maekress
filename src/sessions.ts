@@ -40,7 +40,11 @@ export async function loadSession(id: string): Promise<Session> {
     || typeof session.provider !== "string" || typeof session.model !== "string"
     || !Array.isArray(session.messages) || !session.messages.length
     || !session.messages.every((message) => message && typeof message.content === "string"
-      && ["system", "user", "assistant", "tool"].includes(message.role))) {
+      && ["system", "user", "assistant", "tool"].includes(message.role)
+      && (message.images === undefined || (message.role === "user" && Array.isArray(message.images)
+        && message.images.every((image) => image && ["image/png", "image/jpeg", "image/webp"].includes(image.mimeType)
+          && typeof image.data === "string" && image.data.length > 0 && image.data.length <= 7_000_000
+          && /^[A-Za-z0-9+/]+={0,2}$/.test(image.data)))))) {
     throw new Error("Session file is invalid or unsupported.");
   }
   return session;

@@ -365,7 +365,7 @@ const builtinTools: HarnessTool[] = [
     },
   },
   {
-    name: "run_command",
+    name: "cmd",
     description: "Run a shell command in the project directory. Potentially risky commands require user approval.",
     inputSchema: {
       type: "object",

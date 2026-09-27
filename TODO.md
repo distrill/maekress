@@ -3,14 +3,19 @@
 - [x] linebreak on word
 - [x] spinner to show "model working"
 - [x] let me interrupt commands in flight \[esc\]
-- [x] show cwd / git / model / activity on bottom status bar (context usage pending provider support)
+- [x] show cwd / git / model / activity on bottom status bar
 - [x] show last provider-reported input tokens and model context limit when available
-- [ ] implement compaction/context exhaustion handling
-- [ ] let me queue messages
+- [x] let me queue messages during a turn (send in order after completion/interruption)
+- [x] fold consecutive tool calls by tool and target in scrollback; preview current group above activity
+- [x] warn about compaction/context exhaustion handling
+- [x] keep the permission modal (y/n) prompt visible when its message wraps
+- [x] rename (at least in the display) run_command to cmd
+- [x] local clipboard image paste (Ctrl+V or /paste-image; host clipboard, not terminal transport)
+- [x] hitting "y" in a confirmation prompt does but should not fill the input box
+- [ ] persist queued messages across restart and allow editing/removing queued messages
 - [ ] render markdown
 - [ ] general "make it look good"
 - [ ] interactive scroll back, show hide thinking etc, expand something to full screen (for terminal multiline copy)
-- [ ] image paste
 - [ ] up to go through previous messages
 - [ ] too many lines in the input box scrolls the input. that's weird, should grow to accommodate instead
 - [ ] worktrees babyyyy
@@ -19,3 +24,7 @@
 - [ ] cmd line, like my nvim `:`
 - [ ] timer showing how long worked
 - [ ] log failures and improve them
+- [ ] it looks like on restore it calls agent "assistant". let's rename to "agent"
+- [ ] i want to be able to rename myself and the agent
+- [ ] queued message should have variable height. and the whole thing, including contents, should be the same "faded gray" color
+- [ ] we get stuck sometimes. why. what's going on

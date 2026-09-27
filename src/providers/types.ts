@@ -8,9 +8,12 @@ export type ToolCall = {
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
+export type ImageAttachment = { mimeType: "image/png" | "image/jpeg" | "image/webp"; data: string };
+
 export type ModelMessage = {
   role: MessageRole;
   content: string;
+  images?: ImageAttachment[];
   toolCalls?: ToolCall[];
   toolCallId?: string;
   name?: string;

@@ -1,6 +1,7 @@
 import { getCodexCredential } from "../auth.ts";
 import type { ModelProvider, ModelMessage, ToolCall } from "./types.ts";
-import { providerError, readSseData } from "./sse.ts";
+import { providerError, readSseData, withStreamIdleTimeout } from "./sse.ts";
+import { imageParts } from "../images.ts";
 
 const clientVersion = process.env.CODEX_CLIENT_VERSION ?? "0.156.1";
 
@@ -18,13 +19,16 @@ type CodexEvent = {
   };
 };
 
-function codexInputMessage(message: ModelMessage): Array<Record<string, unknown>> {
+export function codexInputMessage(message: ModelMessage): Array<Record<string, unknown>> {
   if (message.role === "tool") {
     return [{ type: "function_call_output", call_id: message.toolCallId, output: message.content }];
   }
   const items: Array<Record<string, unknown>> = [];
-  if (message.content || !message.toolCalls?.length) {
-    items.push({ role: message.role, content: message.content });
+  if (message.content || message.images?.length || !message.toolCalls?.length) {
+    const content = message.images?.length ? imageParts(message).map((part) => part.type === "text"
+      ? { type: "input_text", text: part.text }
+      : { type: "input_image", image_url: `data:${part.image.mimeType};base64,${part.image.data}` }) : message.content;
+    items.push({ role: message.role, content });
   }
   for (const call of message.toolCalls ?? []) {
     items.push({ type: "function_call", call_id: call.id, name: call.name, arguments: call.arguments });
@@ -66,6 +70,7 @@ export const codexProvider: ModelProvider = {
     if (!credential) throw new Error("Sign in first with /login codex.");
     const system = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
     const input = messages.filter((message) => message.role !== "system").flatMap(codexInputMessage);
+    return withStreamIdleTimeout(signal, async (streamSignal, activity) => {
     const response = await fetch("https://chatgpt.com/backend-api/codex/responses", {
       method: "POST",
       headers: {
@@ -93,12 +98,12 @@ export const codexProvider: ModelProvider = {
         tool_choice: "auto",
         text: { verbosity: "low" },
       }),
-      signal,
+      signal: streamSignal,
     });
     if (!response.ok) throw await providerError(response);
     const calls = new Map<string, ToolCall>();
     let inputTokens: number | undefined;
-    for await (const data of readSseData(response, signal)) {
+    for await (const data of readSseData(response, streamSignal, activity)) {
       const event = JSON.parse(data) as CodexEvent;
       if (event.type === "response.output_text.delta" && typeof event.delta === "string") onText(event.delta);
       if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
@@ -122,5 +127,6 @@ export const codexProvider: ModelProvider = {
       }
     }
     return { toolCalls: [...calls.values()], inputTokens };
+    });
   },
 };

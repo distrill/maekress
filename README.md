@@ -47,8 +47,17 @@ npm install
 npm start
 ```
 
-Inside the TUI, use `Enter` to submit a message, `Ctrl+J` for a newline, `Esc`
+Inside the TUI, use `Ctrl+K` to open the floating command palette (type to filter, arrow keys to choose, Tab to complete, Enter to run, Esc to close without changing your draft). Use `Enter` to submit a message, `Ctrl+J` for a newline, `Esc`
 to interrupt an active model turn or shell command, and `Ctrl+C` to quit.
+Use `Ctrl+V` or `/paste-image` to attach an image from the **local host clipboard**
+(PNG, JPEG, or WebP, up to 5 MiB). The input title shows the attachment count;
+`[image 01]` is a display marker, not the data sent to the model. Submit with
+`Enter` (with or without text). Image bytes are saved in the private session
+JSON so retry and resume can send them again; this increases session file size.
+A vision-capable model is required. In tmux or over SSH, the clipboard read
+runs on the host running gmkres, not in the terminal client; terminal paste of
+an image by itself may not carry image bytes. Use the explicit shortcut or
+command when the image is in that host clipboard.
 The scrollback shows right-aligned user boxes, left-aligned assistant boxes, and
 single-line tool summaries instead of tool arguments and results. Resuming a
 session reconstructs this compact view from saved messages; full tool results

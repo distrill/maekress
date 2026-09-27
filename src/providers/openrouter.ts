@@ -1,8 +1,9 @@
 import type { ModelProvider, ModelMessage, ToolCall } from "./types.ts";
-import { providerError, readSseData } from "./sse.ts";
+import { providerError, readSseData, withStreamIdleTimeout } from "./sse.ts";
 import { getApiKey } from "../auth.ts";
+import { imageParts } from "../images.ts";
 
-function openRouterMessage(message: ModelMessage): Record<string, unknown> {
+export function openRouterMessage(message: ModelMessage): Record<string, unknown> {
   if (message.role === "tool") {
     return { role: "tool", tool_call_id: message.toolCallId, name: message.name, content: message.content };
   }
@@ -16,6 +17,11 @@ function openRouterMessage(message: ModelMessage): Record<string, unknown> {
         function: { name: call.name, arguments: call.arguments },
       })),
     };
+  }
+  if (message.images?.length) {
+    return { role: message.role, content: imageParts(message).map((part) => part.type === "text"
+      ? { type: "text", text: part.text }
+      : { type: "image_url", image_url: { url: `data:${part.image.mimeType};base64,${part.image.data}` } }) };
   }
   return { role: message.role, content: message.content };
 }
@@ -36,6 +42,7 @@ export const openRouterProvider: ModelProvider = {
   async stream({ model, messages, tools, signal, onText }) {
     const apiKey = await getApiKey("openrouter") ?? process.env.OPENROUTER_API_KEY;
     if (!apiKey) throw new Error("Sign in with /login openrouter_api_key before using OpenRouter.");
+    return withStreamIdleTimeout(signal, async (streamSignal, activity) => {
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -55,12 +62,12 @@ export const openRouterProvider: ModelProvider = {
         stream: true,
         stream_options: { include_usage: true },
       }),
-      signal,
+      signal: streamSignal,
     });
     if (!response.ok) throw await providerError(response);
     const calls = new Map<number, ToolCall>();
     let inputTokens: number | undefined;
-    for await (const data of readSseData(response, signal)) {
+    for await (const data of readSseData(response, streamSignal, activity)) {
       const event = JSON.parse(data) as {
         choices?: Array<{ delta?: {
           content?: string | Array<{ text?: string }>;
@@ -86,5 +93,6 @@ export const openRouterProvider: ModelProvider = {
       }
     }
     return { toolCalls: [...calls.values()], inputTokens };
+    });
   },
 };

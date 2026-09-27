@@ -1,11 +1,13 @@
 // Keep the split footer inside the terminal, leaving a scrollback row when possible.
-export function footerLayout(rows: number, draftLines: number, suggestionLines: number, permissionLines: number, queuedLines = 0) {
+export function footerLayout(rows: number, draftLines: number, suggestionLines: number, permissionLines: number, queuedLines = 0, pendingToolLines = 0) {
   const capacity = Math.max(1, rows - 1);
   // On tiny terminals, prioritize the composer and permission prompt over decoration.
   const inputBorder = Math.min(2, Math.max(0, capacity - 1));
   let remaining = capacity - inputBorder - 1; // at least one editor row
-  const permission = Math.min(permissionLines, remaining);
+  const permission = Math.min(permissionLines, remaining); // border + fixed key-hint row before body growth
   remaining -= permission;
+  const pendingTool = Math.min(pendingToolLines, remaining);
+  remaining -= pendingTool;
   const queued = Math.min(queuedLines, remaining);
   remaining -= queued;
   const status = Math.min(2, remaining);
@@ -18,8 +20,8 @@ export function footerLayout(rows: number, draftLines: number, suggestionLines: 
   remaining -= suggestions;
   const editor = Math.min(Math.max(1, draftLines), remaining + 1);
   return {
-    permission, queued, status, activity, spacer, suggestions, editor,
+    permission, queued, pendingTool, status, activity, spacer, suggestions, editor,
     inputBorder,
-    height: permission + queued + status + activity + spacer + suggestions + editor + inputBorder,
+    height: permission + queued + pendingTool + status + activity + spacer + suggestions + editor + inputBorder,
   };
 }
