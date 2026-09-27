@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { chatBox, glance, history, toolGlance } from "./transcript.ts";
+import { chatBox, glance, history, historyEntries, toolGlance } from "./transcript.ts";
 
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -55,4 +55,15 @@ test("resume reconstructs chat and tool glances without tool output", () => {
   assert.match(transcript, /checking/);
   assert.match(transcript, /read_file: secret.ts/);
   assert.doesNotMatch(transcript, /lots of output|prompt/);
+  const entries = historyEntries([
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "checking", toolCalls: [call] },
+    { role: "tool", toolCallId: "1", content: "lots of output" },
+  ]);
+  assert.deepEqual(entries.map((entry) => entry.role), ["user", "assistant", "tool"]);
+  assert.equal(entries.map((entry) => entry.text).join(""), history([
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "checking", toolCalls: [call] },
+    { role: "tool", toolCallId: "1", content: "lots of output" },
+  ]));
 });

@@ -18,3 +18,4 @@
 - [ ] better git integration
 - [ ] cmd line, like my nvim `:`
 - [ ] timer showing how long worked
+- [ ] log failures and improve them

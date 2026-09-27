@@ -10,8 +10,8 @@ import type { ModelMessage } from "./providers/types.ts";
 import { loadPreferences, savePreferences, type Preferences } from "./preferences.ts";
 import { executeTool, getToolDefinitions } from "./tools.ts";
 import { newSession, saveSession, type Session } from "./sessions.ts";
-import { formatStatus, readGitStatus, type StatusState } from "./status.ts";
-import { chatBox, glance, history, toolGlance } from "./transcript.ts";
+import { contextWarning, formatStatus, readGitStatus, type ContextWarning, type StatusState } from "./status.ts";
+import { chatBox, glance, historyEntries, toolGlance } from "./transcript.ts";
 import { footerLayout } from "./footer-layout.ts";
 
 const systemPrompt = "You are a practical creative coding assistant helping the user make games. Use the available project tools when they help. Execute routine in-project edits and commands without asking first. Check in before risky, destructive, security-sensitive, or unclear actions; the harness may also request approval for those. Explain your work clearly.";
@@ -19,16 +19,17 @@ const systemPrompt = "You are a practical creative coding assistant helping the 
 type Completion = { insert: string; label: string };
 
 const columns = () => process.stdout.columns || 80;
+const transcriptColors = { user: "#8BD5CA", assistant: "#CBA6F7", tool: "#A6ADC8" } as const;
 // Keep the last scrollback row open. A trailing newline leaves an empty cursor
 // row between the last message and the activity line in split-footer mode.
 let scrollbackHasOpenRow = false;
-function writeScrollback(text: string): void {
+let writeScrollback = (text: string, color?: string): void => {
   if (!text) return;
   const output = (scrollbackHasOpenRow ? "\n" : "") + text.replace(/^\n/, "").replace(/\n$/, "");
   process.stdout.write(output);
   scrollbackHasOpenRow = !output.endsWith("\n");
-}
-const writeGlance = (text: string) => writeScrollback(glance(text, columns()));
+};
+const writeGlance = (text: string) => writeScrollback(glance(text, columns()), transcriptColors.tool);
 
 function fuzzyScore(query: string, candidate: string): number | undefined {
   const needle = query.toLowerCase();
@@ -89,7 +90,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     writeGlance(`Unknown saved provider '${preferences.provider}'; using OpenAI Codex`);
   }
   let activeModel = resumed?.model ?? preferences.models?.[activeProvider] ?? getProvider(activeProvider).defaultModel;
-  const session = resumed ?? newSession(process.cwd(), activeProvider, activeModel, systemPrompt);
+  let session = resumed ?? newSession(process.cwd(), activeProvider, activeModel, systemPrompt);
   process.stderr.write("Saving session…\n");
   await saveSession(session);
 
@@ -107,6 +108,28 @@ export async function startTui(resumed?: Session): Promise<void> {
     },
   });
 
+  // Captured stdout treats escape sequences as visible characters when splitting
+  // rows. Render colored text into a scrollback snapshot instead, so borders
+  // stay aligned and the color belongs to each message (including on resume).
+  writeScrollback = (text, color) => {
+    if (!text) return;
+    const output = text.replace(/^\n/, "").replace(/\n$/, "");
+    const lines = output.split("\n");
+    renderer.writeToScrollback(({ renderContext, width }) => {
+      const root = new BoxRenderable(renderContext, {
+        id: "transcript-entry", width, height: lines.length,
+        position: "absolute", flexDirection: "column",
+      });
+      lines.forEach((line, index) => root.add(new TextRenderable(renderContext, {
+        content: line, fg: color ?? "#E5E9F0", position: "absolute", top: index,
+        width: Math.max(1, width), height: 1, wrapMode: "none",
+      })));
+      return { root, height: lines.length, rowColumns: width,
+        startOnNewLine: scrollbackHasOpenRow, trailingNewline: false };
+    });
+    scrollbackHasOpenRow = true;
+  };
+
   const footer = new BoxRenderable(renderer, {
     id: "composer-footer",
     width: "100%",
@@ -117,13 +140,11 @@ export async function startTui(resumed?: Session): Promise<void> {
     gap: 0,
   });
 
-  // Match the right edge and width of submitted user boxes in scrollback.
-  const inputWidth = () => Math.min(Math.max(1, renderer.width - 2), Math.max(4, renderer.width - 8));
+  const inputWidth = () => Math.max(1, renderer.width - 2);
   const inputBox = new BoxRenderable(renderer, {
     id: "input-box",
     width: inputWidth(),
     height: 3,
-    alignSelf: "flex-end",
     paddingX: 1,
     border: true,
     borderStyle: "rounded",
@@ -131,6 +152,31 @@ export async function startTui(resumed?: Session): Promise<void> {
     title: "You",
     titleColor: "#8BD5CA",
   });
+
+  const queuedView = new BoxRenderable(renderer, {
+    id: "queued-messages", width: "100%", height: 0, flexDirection: "column",
+    alignItems: "center", overflow: "hidden",
+  });
+  const queuedMessages: string[] = [];
+  const queuedCards: Array<{ box: BoxRenderable; text: TextRenderable }> = [];
+  function renderQueue(): void {
+    for (const card of queuedCards) queuedView.remove(card.box);
+    queuedCards.length = 0;
+    for (const message of queuedMessages) {
+      const box = new BoxRenderable(renderer, {
+        id: "queued-message", width: Math.max(1, inputWidth() - 2),
+        paddingX: 1, border: ["top", "left", "right"], borderStyle: "rounded",
+        borderColor: "#747C91", flexShrink: 0,
+      });
+      const text = new TextRenderable(renderer, {
+        content: message, fg: "#E5E9F0", width: "100%", wrapMode: "word",
+      });
+      box.add(text);
+      queuedView.add(box);
+      queuedCards.push({ box, text });
+    }
+    scheduleComposerResize();
+  }
 
   const approvalBox = new BoxRenderable(renderer, {
     id: "approval-box",
@@ -181,9 +227,11 @@ export async function startTui(resumed?: Session): Promise<void> {
     fg: "#A6ADC8",
     height: 0,
   });
+  let suggestionLines = 0;
 
   let composer: TextareaRenderable;
-  const messages: ModelMessage[] = session.messages;
+  let messages: ModelMessage[] = session.messages;
+  let retryable = messages.at(-1)?.role === "user" || messages.at(-1)?.role === "tool";
   let busy = false;
   let turnController: AbortController | undefined;
   let resolveToolConfirmation: ((approved: boolean) => void) | undefined;
@@ -191,6 +239,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   let workingPhase = "";
   let workingFrame = 0;
   let notice = "ready";
+  let warnedContext: ContextWarning = 0;
   let statusClosed = false;
   const statusState: StatusState = {
     cwd: process.cwd(), provider: getProvider(activeProvider).label, model: activeModel,
@@ -201,13 +250,22 @@ export async function startTui(resumed?: Session): Promise<void> {
     statusState.provider = getProvider(activeProvider).label;
     statusState.model = activeModel;
     status.content = formatStatus(statusState);
+    status.fg = contextWarning(statusState) >= 90 ? "#F38BA8" : contextWarning(statusState) >= 85 ? "#F9E2AF" : "#8BD5CA";
     activityView.content = workingTimer
       ? `${frames[workingFrame++ % frames.length]} ${workingPhase} · Esc to stop`
       : "";
+    inputBox.borderColor = busy || notice !== "ready" ? "#747C91" : "#8BD5CA";
   }
   function setNotice(message: string): void {
     if (message !== notice && message !== "ready") writeGlance(message);
     notice = message;
+    renderStatus();
+  }
+  function warnContext(): void {
+    const level = contextWarning(statusState);
+    if (level <= warnedContext) return;
+    warnedContext = level;
+    writeGlance(`Context ${level}%+ (last request, not next-turn estimate) · ${level >= 95 ? "Near limit! /new starts a fresh session" : level >= 90 ? "Consider /new before the limit" : "Keep an eye on context"}`);
   }
   function startWorking(phase: string): void {
     workingPhase = phase;
@@ -260,6 +318,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       const limit = models.find((model) => model.id === selectedModel)?.contextLength;
       statusState.contextLimit = typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? limit : undefined;
       renderStatus();
+      warnContext();
     }).catch(() => { modelCatalogs.delete(provider.id); });
   }
 
@@ -347,6 +406,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   function resizeComposer(): void {
     if (!composer) return;
     inputBox.width = inputWidth();
+    for (const card of queuedCards) card.box.width = Math.max(1, inputWidth() - 2);
     const rows = process.stdout.rows || 24;
     const editorWidth = Math.max(1, inputWidth() - 4);
     // Measure at the new width, not the viewport's cached size from before resize.
@@ -356,7 +416,15 @@ export async function startTui(resumed?: Session): Promise<void> {
       approvalText.width = Math.max(1, renderer.width - 4);
       permissionLines = Math.max(2, approvalText.virtualLineCount) + 2;
     }
-    const layout = footerLayout(rows, lines, completionChoices.length ? completionView.content.split("\n").length : 0, permissionLines);
+    const queuedLines = queuedCards.map(({ box, text }) => {
+      const width = Math.max(1, inputWidth() - 2 - 4);
+      const height = Math.max(1, ...text.plainText.split("\n").map((line) => Math.ceil([...line].length / width))) + 1;
+      box.height = height;
+      text.height = height - 1;
+      return height;
+    }).reduce((sum, height) => sum + height, 0);
+    const layout = footerLayout(rows, lines, suggestionLines, permissionLines, queuedLines);
+    queuedView.height = layout.queued;
     activityView.height = layout.activity;
     activitySpacer.height = layout.spacer;
     status.height = layout.status;
@@ -371,6 +439,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   function renderCompletions(): void {
     if (!completionChoices.length) {
       completionView.content = "";
+      suggestionLines = 0;
       completionView.height = 0;
       scheduleComposerResize();
       return;
@@ -381,7 +450,8 @@ export async function startTui(resumed?: Session): Promise<void> {
     const rows = visible.map((choice, index) => `${start + index === completionIndex ? "›" : " "} ${choice.label}`);
     if (hasMoreBelow) rows.push("↓ more");
     completionView.content = `${hasMoreAbove ? "↑ more above" : "Suggestions"} · ${completionChoices.length} matches\n${rows.join("\n")}`;
-    completionView.height = rows.length + 1;
+    suggestionLines = rows.length + 1;
+    completionView.height = suggestionLines;
     scheduleComposerResize();
   }
 
@@ -391,11 +461,11 @@ export async function startTui(resumed?: Session): Promise<void> {
       return;
     }
     completionSuppressedInput = undefined;
-    if (!input.startsWith("/")) return showCompletions([], input);
-    const commandNames = ["help", "login", "model", "provider"];
+    if (busy || !input.startsWith("/")) return showCompletions([], input);
+    const commandNames = ["help", "login", "model", "provider", "new", "retry"];
     const firstSpace = input.indexOf(" ");
     if (firstSpace < 0) {
-      return showCompletions(matchChoices(input.slice(1), commandNames.map((name) => ({ insert: `/${name}${name === "help" ? "" : " "}`, label: `/${name}` }))), input);
+      return showCompletions(matchChoices(input.slice(1), commandNames.map((name) => ({ insert: `/${name}${["help", "new", "retry"].includes(name) ? "" : " "}`, label: `/${name}` }))), input);
     }
     const command = input.slice(0, firstSpace);
     const query = input.slice(firstSpace + 1).trimStart();
@@ -427,11 +497,43 @@ export async function startTui(resumed?: Session): Promise<void> {
     showCompletions([], input);
   }
 
-  async function handleInput(text: string): Promise<void> {
+  async function handleInput(text: string, fromQueue = false): Promise<void> {
     const input = text.trim();
-    if (!input || busy) return;
+    if (!input) return;
+    if (busy || (queuedMessages.length && !fromQueue)) {
+      if (input.startsWith("/")) {
+        writeGlance("Commands are unavailable during a turn; finish or stop it first");
+        return;
+      }
+      queuedMessages.push(input);
+      renderQueue();
+      return;
+    }
     if (input === "/help") {
-      writeGlance("Commands: /login · /provider · /model · /help; Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit");
+      writeGlance("Commands: /new · /retry · /login · /provider · /model · /help; Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit");
+      return;
+    }
+    if (input === "/new") {
+      busy = true;
+      composer.blur();
+      try {
+        await saveSession(session);
+        const oldId = session.id;
+        const next = newSession(process.cwd(), activeProvider, activeModel, systemPrompt);
+        await saveSession(next);
+        session = next;
+        messages = next.messages;
+        retryable = false;
+        statusState.contextUsed = undefined;
+        warnedContext = 0;
+        renderStatus();
+        writeGlance(`New session: ${next.id} · previous: ${oldId} (resume with gmkres --resume ${oldId})`);
+      } catch (error) {
+        writeGlance(`Could not start new session (current session unchanged): ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        busy = false;
+        composer.focus();
+      }
       return;
     }
     if (input === "/model") {
@@ -492,6 +594,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         activeModel = preferences.models?.[provider.id] ?? provider.defaultModel;
         statusState.contextUsed = undefined;
         statusState.contextLimit = undefined;
+        warnedContext = 0;
         refreshContextLimit();
         setNotice(provider.id === "openrouter" && !await provider.isConfigured()
           ? "Use /login openrouter_api_key to connect OpenRouter"
@@ -506,32 +609,58 @@ export async function startTui(resumed?: Session): Promise<void> {
       activeModel = input.slice("/model ".length).trim();
       statusState.contextUsed = undefined;
       statusState.contextLimit = undefined;
+      warnedContext = 0;
       refreshContextLimit();
       setNotice(activeModel ? "Model updated" : "Model name cannot be empty");
       if (activeModel) await persistSelection();
       return;
     }
 
+    const retry = input === "/retry";
+    // An interrupted request remains in history. A new message can steer the
+    // continuation; /retry is only needed to repeat without adding a message.
+    if (retry && !retryable) {
+      writeGlance("Nothing to retry · send a message instead");
+      return;
+    }
+    // Claim the turn before the async credential check. Otherwise multiple
+    // submits can all see an idle composer and start concurrent model loops.
+    busy = true;
+    renderStatus();
     const provider = getProvider(activeProvider);
-    if (!await provider.isConfigured()) {
-      setNotice(provider.id === "openrouter"
+    let configured = false;
+    let credentialError = false;
+    try {
+      configured = await provider.isConfigured();
+    } catch (error) {
+      credentialError = true;
+      setNotice(`Credential check failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!configured) {
+      if (!credentialError) setNotice(provider.id === "openrouter"
         ? "Sign in with /login openrouter_api_key before using OpenRouter"
         : "Sign in with /login codex before chatting");
-      writeGlance(notice);
+      busy = false;
+      renderStatus();
       return;
     }
 
+    if (fromQueue) {
+      queuedMessages.shift();
+      renderQueue();
+    }
     const turnStart = messages.length;
-    busy = true;
-    composer.blur();
-    messages.push({ role: "user", content: input });
-    writeScrollback(chatBox("user", input, columns()));
+    if (!retry) {
+      messages.push({ role: "user", content: input });
+      writeScrollback(chatBox("user", input, columns()), transcriptColors.user);
+    }
+    retryable = false;
     const controller = new AbortController();
     turnController = controller;
     try {
+      await checkpoint();
       while (true) {
         controller.signal.throwIfAborted();
-        composer.blur();
         const turnText: string[] = [];
         startWorking("model working");
         const result = await provider.stream({
@@ -546,19 +675,20 @@ export async function startTui(resumed?: Session): Promise<void> {
         controller.signal.throwIfAborted();
         statusState.contextUsed = result.inputTokens;
         renderStatus();
+        warnContext();
         const answer = turnText.join("");
         if (!result.toolCalls.length) {
           stopWorking();
           messages.push({ role: "assistant", content: answer });
           await checkpoint();
-          if (answer) writeScrollback(chatBox("assistant", answer, columns(), provider.label));
+          if (answer) writeScrollback(chatBox("assistant", answer, columns(), provider.label), transcriptColors.assistant);
           setNotice("ready");
           return;
         }
 
         messages.push({ role: "assistant", content: answer, toolCalls: result.toolCalls });
         if (answer) {
-          writeScrollback(chatBox("assistant", answer, columns(), provider.label));
+          writeScrollback(chatBox("assistant", answer, columns(), provider.label), transcriptColors.assistant);
         }
         for (const call of result.toolCalls) {
           controller.signal.throwIfAborted();
@@ -577,13 +707,12 @@ export async function startTui(resumed?: Session): Promise<void> {
           } catch (error) {
             toolResult = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
           } finally {
-            composer.blur();
             approvalBox.visible = false;
             resizeComposer();
           }
           controller.signal.throwIfAborted();
           messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: toolResult });
-          writeScrollback(toolGlance(call, toolResult, columns()));
+          writeScrollback(toolGlance(call, toolResult, columns()), transcriptColors.tool);
         }
         void readGitStatus(statusState.cwd).then((git) => { statusState.git = git; renderStatus(); });
         await checkpoint();
@@ -597,23 +726,39 @@ export async function startTui(resumed?: Session): Promise<void> {
           const results = messages.slice(pending + 1);
           if (results.length < calls.length) messages.splice(pending);
         }
-        writeGlance("Interrupted · completed tool actions cannot be undone");
+        retryable = messages.at(-1)?.role === "user" || messages.at(-1)?.role === "tool";
+        writeGlance(`Interrupted · completed tool actions cannot be undone${retryable ? " · send a message or /retry" : ""}`);
         setNotice("Interrupted · ready");
         await checkpoint();
       } else {
         const message = error instanceof Error ? error.message : String(error);
-        writeGlance(`Provider error · ${message}`);
+        // Keep complete tool rounds, discard only an incomplete tool-call exchange.
+        const pending = messages.findLastIndex((entry) => entry.role === "assistant" && entry.toolCalls?.length);
+        if (pending >= 0) {
+          const calls = messages[pending]!.toolCalls!;
+          if (messages.slice(pending + 1).length < calls.length) messages.splice(pending);
+        }
+        retryable = messages.at(-1)?.role === "user" || messages.at(-1)?.role === "tool";
+        await checkpoint();
+        const contextHint = /context.{0,30}(length|limit|window|large|exceed)|(?:token|prompt).{0,30}(limit|large|exceed)|maximum context/i.test(message)
+          ? " · context limit: use /new to start fresh" : "";
+        writeGlance(`Provider error · ${message}${contextHint}${retryable ? " · send a message or /retry (message saved)" : ""}`);
         setNotice("Provider error · see scrollback");
-        messages.splice(turnStart);
       }
     } finally {
       stopWorking();
       turnController = undefined;
       busy = false;
+      renderStatus();
       resolveToolConfirmation = undefined;
       approvalBox.visible = false;
       resizeComposer();
       composer.focus();
+      // A cancelled or failed turn must not strand its queued follow-ups.
+      // Start the next send synchronously, claiming busy before any await.
+      if (!statusClosed && queuedMessages.length) {
+        void handleInput(queuedMessages[0]!, true);
+      }
     }
   }
 
@@ -658,6 +803,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         const approved = key.name === "y";
         setNotice(approved ? "Approved · running tool" : "Denied · returning result to model");
         if (approved) startWorking("running tool");
+        composer.focus();
         resolve(approved);
       }
       return;
@@ -682,6 +828,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         activeModel = choice.insert.slice("/model ".length);
         statusState.contextUsed = undefined;
         statusState.contextLimit = undefined;
+        warnedContext = 0;
         refreshContextLimit();
         setNotice("Model selected");
         void persistSelection();
@@ -703,7 +850,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       }
       if (currentInput.startsWith("/") && !currentInput.includes(" ")) {
         key.preventDefault();
-        if (choice.insert === "/help") {
+        if (["/help", "/new", "/retry"].includes(choice.insert)) {
           composer.setText("");
           completionChoices = [];
           void handleInput(choice.insert);
@@ -727,6 +874,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   footer.add(activitySpacer);
   footer.add(completionView);
   footer.add(approvalBox);
+  footer.add(queuedView);
   inputBox.add(composer);
   footer.add(inputBox);
   footer.add(status);
@@ -750,5 +898,7 @@ export async function startTui(resumed?: Session): Promise<void> {
 
   writeGlance(`GMKRES · ${providers.map((provider) => provider.id).join(", ")} · /help`);
   writeGlance(`Session: ${session.id}${resumed ? " (resumed)" : ""}`);
-  if (resumed) writeScrollback(history(messages, columns()));
+  if (resumed) for (const entry of historyEntries(messages, columns())) {
+    writeScrollback(entry.text, transcriptColors[entry.role]);
+  }
 }

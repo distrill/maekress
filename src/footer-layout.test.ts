@@ -9,10 +9,19 @@ for (const rows of [1, 2, 3, 4, 5, 7, 10, 24, 40]) {
       assert.ok(layout.height <= rows);
       assert.ok(layout.height >= 1);
       assert.ok(layout.editor >= 1);
-      assert.equal(layout.height, layout.editor + layout.inputBorder + layout.permission + layout.status + layout.activity + layout.spacer + layout.suggestions);
+      assert.equal(layout.height, layout.editor + layout.inputBorder + layout.permission + layout.queued + layout.status + layout.activity + layout.spacer + layout.suggestions);
     }
   });
 }
+
+test("queued cards take available space without hiding the editor", () => {
+  assert.equal(footerLayout(24, 1, 0, 0, 4).queued, 4);
+  assert.equal(footerLayout(24, 1, 0, 0, 4).height, 11);
+  const tiny = footerLayout(5, 1, 0, 0, 20);
+  assert.equal(tiny.editor, 1);
+  assert.ok(tiny.height <= 5);
+  assert.equal(tiny.queued, 1);
+});
 
 test("normal footer grows and shrinks with draft and suggestions", () => {
   assert.equal(footerLayout(24, 1, 0, 0).height, 7);

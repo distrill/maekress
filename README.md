@@ -63,7 +63,17 @@ usage or a prediction for the next turn. Unknown values are hidden rather than e
 add a function to `statusModules` and its id to `statusOrder`, or reorder/remove
 ids there. Git status refreshes in the background. The harness currently sends
 the full saved conversation each turn and does not compact it; provider usage
-alone does not solve context exhaustion. Input and scrollback messages
+alone does not solve context exhaustion. At 85%, 90%, and 95% of the model's
+known context limit, one-time notices appear and the status line changes from
+amber to red. These warnings use the last provider-reported request size, not
+an estimate of the next turn; they do not block sending. Use `/new` to save the
+current session and start a fresh one in the same project with the selected
+provider/model; the old resume ID is printed. After a provider error or an
+interrupted request, the submitted message and completed tool rounds are saved;
+send another message to steer the continuation, or use `/retry` to continue without
+sending the message twice. Messages queued during a turn are sent in order when
+that turn ends, including after an interruption. Context-limit errors
+also suggest `/new`. No automatic compaction occurs. Input and scrollback messages
 wrap at word boundaries. Interruption cannot undo tool
 operations that have already completed. On exit, the TUI prints `resume with gmkres --resume <resume_id>`.
 Run that command from the same project directory to restore the chat and its selected

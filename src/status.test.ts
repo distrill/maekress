@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { homedir, hostname, tmpdir, userInfo } from "node:os";
 import { join, sep } from "node:path";
 import { execFileSync } from "node:child_process";
-import { formatStatus, readGitStatus } from "./status.ts";
+import { contextWarning, formatStatus, readGitStatus } from "./status.ts";
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync("git", args, { cwd, stdio: "ignore" });
@@ -42,6 +42,17 @@ test("main status shows model and context, defaulting to zero before usage arriv
   assert.equal(formatStatus({ ...state, contextUsed: 0, contextLimit: 1000 }), `${prefix}  ·  ctx: 0%`);
   assert.equal(formatStatus({ ...state, contextUsed: 100 }), prefix);
   assert.equal(formatStatus({ ...state, contextUsed: 100, contextLimit: 0 }), prefix);
+});
+
+test("context warning levels use observed request usage only", () => {
+  const state = { cwd: ".", provider: "Codex", model: "model", contextLimit: 1000 };
+  assert.equal(contextWarning(state), 0);
+  assert.equal(contextWarning({ ...state, contextUsed: 849 }), 0);
+  assert.equal(contextWarning({ ...state, contextUsed: 850 }), 85);
+  assert.equal(contextWarning({ ...state, contextUsed: 900 }), 90);
+  assert.equal(contextWarning({ ...state, contextUsed: 950 }), 95);
+  assert.equal(contextWarning({ ...state, contextUsed: 1200 }), 95);
+  assert.equal(contextWarning({ ...state, contextUsed: 950, contextLimit: 0 }), 0);
 });
 
 test("Git footer abbreviates only paths inside home", () => {

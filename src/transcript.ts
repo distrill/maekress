@@ -90,17 +90,21 @@ export function glance(text: string, columns = 80): string {
   return `${prefix}${short(text, Math.max(0, columns - 1 - prefix.length))}\n`;
 }
 
-export function history(messages: ModelMessage[], columns = 80): string {
-  let output = "";
+export function historyEntries(messages: ModelMessage[], columns = 80): Array<{ role: "user" | "assistant" | "tool"; text: string }> {
+  const entries: Array<{ role: "user" | "assistant" | "tool"; text: string }> = [];
   for (const message of messages) {
-    if (message.role === "user") output += chatBox("user", message.content, columns);
+    if (message.role === "user") entries.push({ role: "user", text: chatBox("user", message.content, columns) });
     if (message.role === "assistant") {
-      if (message.content) output += chatBox("assistant", message.content, columns);
+      if (message.content) entries.push({ role: "assistant", text: chatBox("assistant", message.content, columns) });
       for (const call of message.toolCalls ?? []) {
         const result = messages.find((item) => item.role === "tool" && item.toolCallId === call.id);
-        output += toolGlance(call, result?.content, columns);
+        entries.push({ role: "tool", text: toolGlance(call, result?.content, columns) });
       }
     }
   }
-  return output;
+  return entries;
+}
+
+export function history(messages: ModelMessage[], columns = 80): string {
+  return historyEntries(messages, columns).map((entry) => entry.text).join("");
 }

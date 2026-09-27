@@ -20,6 +20,14 @@ export type StatusState = {
   git?: string;
 };
 
+export type ContextWarning = 0 | 85 | 90 | 95;
+
+export function contextWarning(state: StatusState): ContextWarning {
+  if (state.contextUsed === undefined || state.contextLimit === undefined || state.contextLimit <= 0) return 0;
+  const percent = state.contextUsed / state.contextLimit * 100;
+  return percent >= 95 ? 95 : percent >= 90 ? 90 : percent >= 85 ? 85 : 0;
+}
+
 // A module returns a short label or nothing. Add one here, then add its id to
 // statusOrder to display it.
 export type StatusModule = (state: StatusState) => string | undefined;
