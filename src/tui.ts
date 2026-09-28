@@ -193,6 +193,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     content: entry.content, ...(entry.images ? { images: entry.images } : {}),
   })) ?? [];
   let draftImages: ImageAttachment[] = [];
+  let pendingDraft: { content: string; images: ImageAttachment[] } | undefined;
   let queuedSelected = -1;
   let queuedEditing = -1;
   let queuedDirty = false;
@@ -333,6 +334,10 @@ export async function startTui(resumed?: Session): Promise<void> {
     content: "", fg: transcriptColors.tool, width: "100%", height: 0,
     flexShrink: 0, wrapMode: "none",
   });
+  const pendingUserView = new TextRenderable(renderer, {
+    content: "", fg: transcriptColors.user, width: "100%", height: 0,
+    flexShrink: 0, wrapMode: "none", visible: false,
+  });
   const activityView = new TextRenderable(renderer, {
     content: "",
     fg: "#E5E9F0",
@@ -360,6 +365,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     height: 0,
   });
   let suggestionLines = 0;
+  let pendingUserLines = 0;
 
   let composer: TextareaRenderable;
   let messages: ModelMessage[] = session.messages;
@@ -384,6 +390,33 @@ export async function startTui(resumed?: Session): Promise<void> {
     const text = toolBatch.flush(columns());
     if (text) writeScrollback(text, transcriptColors.tool);
     updatePendingTool();
+  }
+  function showPendingUser(input: string, images: ImageAttachment[]): void {
+    const userMessage = { role: "user" as const, content: input, ...(images.length ? { images } : {}) };
+    const box = chatBox("user", imageLabel(userMessage), columns(), displayNames.user, displayNames).replace(/^\n/, "").replace(/\n$/, "");
+    pendingUserView.content = box;
+    pendingUserView.visible = true;
+    pendingUserLines = box.split("\n").length;
+    pendingDraft = { content: input, images: [...images] };
+    scheduleComposerResize();
+  }
+  function commitPendingUser(): void {
+    if (!pendingDraft) return;
+    const { content, images } = pendingDraft;
+    const userMessage = { role: "user" as const, content, ...(images.length ? { images } : {}) };
+    pendingDraft = undefined;
+    pendingUserView.content = "";
+    pendingUserView.visible = false;
+    pendingUserLines = 0;
+    writeScrollback(chatBox("user", imageLabel(userMessage), columns(), displayNames.user, displayNames), transcriptColors.user);
+    scheduleComposerResize();
+  }
+  function clearPendingUser(): void {
+    pendingDraft = undefined;
+    pendingUserView.content = "";
+    pendingUserView.visible = false;
+    pendingUserLines = 0;
+    scheduleComposerResize();
   }
   let workingPhase = "";
   let workingFrame = 0;
@@ -648,8 +681,9 @@ export async function startTui(resumed?: Session): Promise<void> {
       queuedCards[index]!.textHeight = height - 1;
       return height;
     }).reduce((sum, height) => sum + height, 0);
-    const layout = footerLayout(rows, lines, suggestionLines, permissionLines, queuedLines, toolBatch.count ? 1 : 0);
+    const layout = footerLayout(rows, lines, suggestionLines, permissionLines, queuedLines, toolBatch.count ? 1 : 0, pendingUserLines);
     queuedView.height = layout.queued;
+    pendingUserView.height = layout.pendingUser;
     pendingToolView.height = layout.pendingTool;
     activityView.height = layout.activity;
     activitySpacer.height = layout.spacer;
@@ -935,9 +969,8 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
     const turnStart = messages.length;
     if (!retry) {
-      const userMessage = { role: "user" as const, content: input, ...(images.length ? { images } : {}) };
-      messages.push(userMessage);
-      writeScrollback(chatBox("user", imageLabel(userMessage), columns(), displayNames.user, displayNames), transcriptColors.user);
+      messages.push({ role: "user" as const, content: input, ...(images.length ? { images } : {}) });
+      showPendingUser(input, images);
     }
     retryable = false;
     const controller = new AbortController();
@@ -958,6 +991,7 @@ export async function startTui(resumed?: Session): Promise<void> {
           },
         });
         controller.signal.throwIfAborted();
+        commitPendingUser();
         statusState.contextUsed = result.inputTokens;
         renderStatus();
         warnContext();
@@ -1023,11 +1057,26 @@ export async function startTui(resumed?: Session): Promise<void> {
           const results = messages.slice(pending + 1);
           if (results.length < calls.length) messages.splice(pending);
         }
-        retryable = messages.at(-1)?.role === "user" || messages.at(-1)?.role === "tool";
-        writeGlance(`Interrupted · completed tool actions cannot be undone${retryable ? " · send a message or /retry" : ""}`);
-        setNotice("Interrupted · ready");
+        if (pendingDraft) {
+          const draft = pendingDraft;
+          clearPendingUser();
+          const userIndex = messages.findLastIndex((entry) => entry.role === "user" && entry.content === draft.content);
+          if (userIndex >= turnStart) messages.splice(userIndex, 1);
+          composer.setText(draft.content);
+          composer.cursorOffset = draft.content.length;
+          draftImages = draft.images;
+          updateDraftImages();
+          retryable = messages.at(-1)?.role === "user" || messages.at(-1)?.role === "tool";
+          writeGlance("Interrupted · message restored to composer");
+          setNotice("Interrupted · draft restored");
+        } else {
+          retryable = messages.at(-1)?.role === "user" || messages.at(-1)?.role === "tool";
+          writeGlance(`Interrupted · completed tool actions cannot be undone${retryable ? " · send a message or /retry" : ""}`);
+          setNotice("Interrupted · ready");
+        }
         await checkpoint();
       } else {
+        commitPendingUser();
         const message = error instanceof Error ? error.message : String(error);
         // Keep complete tool rounds, discard only an incomplete tool-call exchange.
         const pending = messages.findLastIndex((entry) => entry.role === "assistant" && entry.toolCalls?.length);
@@ -1246,6 +1295,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
   };
 
+  footer.add(pendingUserView);
   footer.add(pendingToolView);
   footer.add(activityView);
   footer.add(activitySpacer);

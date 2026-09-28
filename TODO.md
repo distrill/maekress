@@ -23,6 +23,7 @@
 - [x] model selection is weird. you shouldn't have to specify a provider, /model should show all model options, along with their providers, and selecting the model should also set the associated provider.
 - [x] timer showing how long worked
 
+- [ ] up arrow should move up inside of the current message input if there is a line above. only at the top should it move to the previous message
 - [ ] general "make it look good"
 - [ ] interactive scroll back, show hide thinking etc, expand something to full screen (for terminal multiline copy)
 - [ ] up to go through previous messages
