@@ -1,31 +1,11 @@
 import type { ModelMessage, ToolCall } from "./providers/types.ts";
 import { imageLabel } from "./images.ts";
+import { width, take } from "./text-width.ts";
+import { markdownBox, type MarkdownBox } from "./markdown.ts";
 
 // Transcript output goes to the captured stdout scrollback, not the footer renderer.
 function clean(text: string): string {
   return text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))|[\x00-\x08\x0b-\x1f\x7f]/g, "");
-}
-
-function width(text: string): number {
-  let count = 0;
-  for (const char of text) {
-    const code = char.codePointAt(0)!;
-    if (/\p{Mark}/u.test(char) || code === 0x200d || code === 0xfe0f) continue;
-    count += code >= 0x1100 && (code <= 0x115f || code >= 0x2329 && code <= 0x232a || code >= 0x2e80 && code <= 0xa4cf || code >= 0xac00 && code <= 0xd7a3 || code >= 0xf900 && code <= 0xfaff || code >= 0xfe10 && code <= 0xfe19 || code >= 0xfe30 && code <= 0xfe6f || code >= 0xff00 && code <= 0xff60 || code >= 0xffe0 && code <= 0xffe6 || code >= 0x1f300 && code <= 0x1faff) ? 2 : 1;
-  }
-  return count;
-}
-
-function take(text: string, max: number): [string, string] {
-  let used = 0;
-  let index = 0;
-  for (const char of text) {
-    const size = width(char);
-    if (used + size > max) break;
-    used += size;
-    index += char.length;
-  }
-  return [text.slice(0, index), text.slice(index)];
 }
 
 function rows(text: string, max: number): string[] {
@@ -49,7 +29,16 @@ function rows(text: string, max: number): string[] {
   return result;
 }
 
-export function chatBox(role: "user" | "assistant", text: string, columns = 80, label?: string): string {
+// Display names are configurable; defaults keep "You" and "Agent" stable in tests.
+export type DisplayNames = { user: string; agent: string };
+const defaultNames: DisplayNames = { user: "You", agent: "Agent" };
+
+export type ChatEntry = { role: "user" | "assistant" | "tool"; text: string; styled?: MarkdownBox };
+
+// Assistant border color matches the TUI's assistant transcript color.
+const assistantBorder = "#CBA6F7";
+
+export function chatBox(role: "user" | "assistant", text: string, columns = 80, label?: string, names: DisplayNames = defaultNames): string {
   // Captured stdout is split at the terminal width by *character count* before
   // OpenTUI renders it. ANSI color sequences count toward that limit even though
   // they take no cells, so they truncate the right border. Keep box lines plain.
@@ -57,7 +46,7 @@ export function chatBox(role: "user" | "assistant", text: string, columns = 80, 
   const boxWidth = Math.min(available, Math.max(4, columns - 8));
   const inner = boxWidth - 4;
   const indent = role === "user" ? " ".repeat(Math.max(0, columns - boxWidth - 1)) : "";
-  const title = clean(label ?? (role === "user" ? "You" : "Assistant")).replace(/\s+/g, " ").trim();
+  const title = clean(label ?? (role === "user" ? names.user : names.agent)).replace(/\s+/g, " ").trim();
   const heading = `─ ${take(title, Math.max(0, boxWidth - 5))[0]} `;
   let output = `\n${indent}╭${heading}${"─".repeat(Math.max(0, boxWidth - 2 - width(heading)))}╮\n`;
   for (const row of rows(text, inner)) {
@@ -145,8 +134,8 @@ export function glance(text: string, columns = 80): string {
   return `${prefix}${short(text, Math.max(0, columns - 1 - prefix.length))}\n`;
 }
 
-export function historyEntries(messages: ModelMessage[], columns = 80): Array<{ role: "user" | "assistant" | "tool"; text: string }> {
-  const entries: Array<{ role: "user" | "assistant" | "tool"; text: string }> = [];
+export function historyEntries(messages: ModelMessage[], columns = 80, names: DisplayNames = defaultNames): ChatEntry[] {
+  const entries: ChatEntry[] = [];
   const batch = new ToolGlanceBatch();
   const flush = () => {
     const text = batch.flush(columns);
@@ -155,12 +144,12 @@ export function historyEntries(messages: ModelMessage[], columns = 80): Array<{ 
   for (const message of messages) {
     if (message.role === "user") {
       flush();
-      entries.push({ role: "user", text: chatBox("user", imageLabel(message), columns) });
+      entries.push({ role: "user", text: chatBox("user", imageLabel(message), columns, names.user, names) });
     }
     if (message.role === "assistant") {
       if (message.content) {
         flush();
-        entries.push({ role: "assistant", text: chatBox("assistant", message.content, columns) });
+        entries.push({ role: "assistant", text: chatBox("assistant", message.content, columns, names.agent, names), styled: markdownBox(message.content, columns, names.agent, assistantBorder) });
       }
       for (const call of message.toolCalls ?? []) {
         const result = messages.find((item) => item.role === "tool" && item.toolCallId === call.id);
@@ -174,6 +163,6 @@ export function historyEntries(messages: ModelMessage[], columns = 80): Array<{ 
   return entries;
 }
 
-export function history(messages: ModelMessage[], columns = 80): string {
-  return historyEntries(messages, columns).map((entry) => entry.text).join("");
+export function history(messages: ModelMessage[], columns = 80, names: DisplayNames = defaultNames): string {
+  return historyEntries(messages, columns, names).map((entry) => entry.text).join("");
 }

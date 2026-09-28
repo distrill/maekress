@@ -11,14 +11,20 @@ import { loadPreferences, savePreferences, type Preferences } from "./preference
 import { executeTool, getToolDefinitions } from "./tools.ts";
 import { newSession, saveSession, type Session } from "./sessions.ts";
 import { contextWarning, formatStatus, readGitStatus, type ContextWarning, type StatusState } from "./status.ts";
-import { chatBox, elapsed, glance, historyEntries, ToolGlanceBatch, toolTarget } from "./transcript.ts";
+import { chatBox, elapsed, glance, historyEntries, ToolGlanceBatch, toolTarget, type DisplayNames } from "./transcript.ts";
+import { markdownBox, type MarkdownBox } from "./markdown.ts";
+import { StyledText } from "@opentui/core";
 import { footerLayout } from "./footer-layout.ts";
 import { imageLabel, imageMarker, readClipboardImage } from "./images.ts";
 import type { ImageAttachment } from "./providers/types.ts";
+import { userInfo } from "node:os";
 
 const systemPrompt = "You are a practical creative coding assistant helping the user make games. Use the available project tools when they help. Execute routine in-project edits and commands without asking first. Check in before risky, destructive, security-sensitive, or unclear actions; the harness may also request approval for those. Explain your work clearly.";
 
 type Completion = { insert: string; label: string };
+
+// Mutable display names; /name updates these and future preferences.json versions persist them.
+const displayNames: DisplayNames = { user: userInfo().username, agent: "Agent" };
 
 const columns = () => process.stdout.columns || 80;
 const transcriptColors = { user: "#8BD5CA", assistant: "#CBA6F7", tool: "#A6ADC8" } as const;
@@ -84,6 +90,9 @@ export async function startTui(resumed?: Session): Promise<void> {
   } catch {
     writeGlance("Could not load saved preferences; using defaults");
   }
+  // Restored before the session so the welcome status line uses them immediately.
+  if (typeof preferences.names?.user === "string" && preferences.names.user.trim()) displayNames.user = preferences.names.user.trim();
+  if (typeof preferences.names?.agent === "string" && preferences.names.agent.trim()) displayNames.agent = preferences.names.agent.trim();
   let activeProvider = "openai-codex";
   try {
     if (resumed?.provider || preferences.provider) activeProvider = getProvider(resumed?.provider ?? preferences.provider!).id;
@@ -132,6 +141,27 @@ export async function startTui(resumed?: Session): Promise<void> {
     scrollbackHasOpenRow = true;
   };
 
+  // Assistant answers carry per-span styled markdown (colors/attributes only;
+  // captured stdout still measures plain characters, so geometry stays exact).
+  const writeStyledScrollback = (box: MarkdownBox): void => {
+    const rows = box.rows;
+    if (!rows.length) return;
+    renderer.writeToScrollback(({ renderContext, width }) => {
+      const root = new BoxRenderable(renderContext, {
+        id: "transcript-styled", width, height: rows.length,
+        position: "absolute", flexDirection: "column",
+      });
+      rows.forEach((row, index) => root.add(new TextRenderable(renderContext, {
+        content: row.length > 1 ? new StyledText(row) : row[0]!.text,
+        position: "absolute", top: index,
+        width: Math.max(1, width), height: 1, wrapMode: "none",
+      })));
+      return { root, height: rows.length, rowColumns: width,
+        startOnNewLine: scrollbackHasOpenRow, trailingNewline: false };
+    });
+    scrollbackHasOpenRow = true;
+  };
+
   const footer = new BoxRenderable(renderer, {
     id: "composer-footer",
     width: "100%",
@@ -151,7 +181,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     border: true,
     borderStyle: "rounded",
     borderColor: "#8BD5CA",
-    title: "You",
+    title: displayNames.user,
     titleColor: "#8BD5CA",
   });
 
@@ -159,26 +189,113 @@ export async function startTui(resumed?: Session): Promise<void> {
     id: "queued-messages", width: "100%", height: 0, flexDirection: "column",
     alignItems: "center", overflow: "hidden",
   });
-  const queuedMessages: Array<{ content: string; images?: ImageAttachment[] }> = [];
+  const queuedMessages: Array<{ content: string; images?: ImageAttachment[] }> = session.queue?.map((entry) => ({
+    content: entry.content, ...(entry.images ? { images: entry.images } : {}),
+  })) ?? [];
   let draftImages: ImageAttachment[] = [];
-  const queuedCards: Array<{ box: BoxRenderable; text: TextRenderable }> = [];
+  let queuedSelected = -1;
+  let queuedEditing = -1;
+  let queuedDirty = false;
+  const queuedCards: Array<{ box: BoxRenderable; text: TextRenderable; textHeight: number }> = [];
+
+  // Persist queue edits on a short debounce so restarts keep recent changes
+  // without writing the whole session on every keystroke.
+  function persistQueue(): void {
+    session.queue = queuedMessages.map((entry) => ({ ...entry }));
+    if (queueSaveTimer) clearTimeout(queueSaveTimer);
+    queueSaveTimer = setTimeout(() => {
+      queueSaveTimer = undefined;
+      void checkpoint();
+    }, 400);
+  }
+
   function renderQueue(): void {
-    for (const card of queuedCards) queuedView.remove(card.box);
+    for (const card of queuedCards) {
+      queuedView.remove(card.box);
+      card.box.destroyRecursively();
+    }
     queuedCards.length = 0;
-    for (const message of queuedMessages) {
+    queuedMessages.forEach((message, index) => {
+      const selected = index === queuedSelected || index === queuedEditing;
       const box = new BoxRenderable(renderer, {
-        id: "queued-message", width: Math.max(1, inputWidth() - 2),
+        id: `queued-message-${index}`, width: Math.max(1, inputWidth() - 2),
         paddingX: 1, border: ["top", "left", "right"], borderStyle: "rounded",
-        borderColor: "#747C91", flexShrink: 0,
+        // The whole card fades to gray; selection and edit lift it slightly.
+        borderColor: queuedEditing === index ? "#CBA6F7" : selected ? "#A6ADC8" : "#747C91",
+        backgroundColor: "#181825", flexShrink: 0,
       });
+      const label = queuedEditing === index ? `${imageLabel(message)} ▌` : imageLabel(message);
       const text = new TextRenderable(renderer, {
-        content: imageLabel(message), fg: "#E5E9F0", width: "100%", wrapMode: "word",
+        content: label, fg: selected ? "#E5E9F0" : "#A6ADC8", width: "100%", wrapMode: "word",
       });
       box.add(text);
       queuedView.add(box);
-      queuedCards.push({ box, text });
-    }
+      queuedCards.push({ box, text, textHeight: 1 });
+    });
     scheduleComposerResize();
+  }
+
+  function selectQueue(): void {
+    if (!queuedMessages.length) return;
+    queuedSelected = (queuedSelected + 1) % queuedMessages.length;
+    queuedEditing = -1;
+    renderQueue();
+  }
+
+  // Load a queued message back into the composer for editing; it leaves the
+  // queue only when resubmitted.
+  function editQueued(): void {
+    if (queuedEditing >= 0 || !queuedMessages.length) return;
+    if (composer.plainText.trim()) {
+      writeGlance("Composer is not empty · send or clear it before editing a queued message");
+      return;
+    }
+    queuedEditing = queuedSelected >= 0 ? queuedSelected : 0;
+    queuedSelected = -1;
+    const entry = queuedMessages[queuedEditing]!;
+    composer.setText(entry.content);
+    draftImages = [...(entry.images ?? [])];
+    updateDraftImages();
+    composer.focus();
+    composer.cursorOffset = entry.content.length;
+    renderQueue();
+    writeGlance("Editing queued message · Enter resubmits · Esc cancels back to the queue");
+  }
+
+  function removeQueued(): void {
+    if (queuedEditing >= 0 || !queuedMessages.length) return;
+    const [removed] = queuedMessages.splice(queuedSelected >= 0 ? queuedSelected : 0, 1);
+    queuedSelected = -1;
+    persistQueue();
+    renderQueue();
+    writeGlance(removed ? `Removed queued message: ${shortQueueLabel(removed)}` : "Queue is empty");
+  }
+
+  function cancelQueuedEdit(): boolean {
+    if (queuedEditing < 0) return false;
+    const entry = queuedMessages[queuedEditing]!;
+    queuedEditing = -1;
+    composer.setText("");
+    draftImages = [];
+    updateDraftImages();
+    queuedSelected = -1;
+    renderQueue();
+    writeGlance(`Kept in queue: ${shortQueueLabel(entry)}`);
+    sendNextQueued();
+    return true;
+  }
+
+  // Continue the queue after a turn (or an edit/cancel) without stealing a
+  // message the user is currently editing.
+  function sendNextQueued(): void {
+    if (statusClosed || busy || queuedEditing >= 0 || !queuedMessages.length) return;
+    const next = queuedMessages[0]!;
+    void handleInput(next.content, true, next.images);
+  }
+
+  function shortQueueLabel(entry: { content: string; images?: ImageAttachment[] }): string {
+    const flat = imageLabel(entry).replace(/\s+/g, " ").trim();
+    return flat.length > 60 ? `${flat.slice(0, 59)}…` : flat;
   }
 
   const approvalBox = new BoxRenderable(renderer, {
@@ -251,6 +368,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   let turnController: AbortController | undefined;
   let resolveToolConfirmation: ((approved: boolean) => void) | undefined;
   let workingTimer: ReturnType<typeof setInterval> | undefined;
+  let queueSaveTimer: ReturnType<typeof setTimeout> | undefined;
   const toolBatch = new ToolGlanceBatch();
   function pendingToolText(): string {
     // Keep the full glance indent; the live footer preview needs it to align
@@ -270,11 +388,12 @@ export async function startTui(resumed?: Session): Promise<void> {
   let workingPhase = "";
   let workingFrame = 0;
   let lastMessageAt: number | undefined;
+  let lastEventAt: number | undefined;
   let notice = "ready";
   let warnedContext: ContextWarning = 0;
   let statusClosed = false;
   const statusState: StatusState = {
-    cwd: process.cwd(), provider: getProvider(activeProvider).label, model: activeModel,
+    cwd: process.cwd(), provider: getProvider(activeProvider).label, model: activeModel, user: displayNames.user,
   };
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   function renderStatus(): void {
@@ -317,11 +436,13 @@ export async function startTui(resumed?: Session): Promise<void> {
     });
   }, 5000);
   void readGitStatus(statusState.cwd).then((git) => { statusState.git = git; renderStatus(); });
-  cleanupStatus = () => { statusClosed = true; clearInterval(gitTimer); if (workingTimer) clearInterval(workingTimer); if (pendingComposerResize) clearImmediate(pendingComposerResize); };
+  cleanupStatus = () => { statusClosed = true; clearInterval(gitTimer); if (workingTimer) clearInterval(workingTimer); if (pendingComposerResize) clearImmediate(pendingComposerResize); if (queueSaveTimer) { clearTimeout(queueSaveTimer); queueSaveTimer = undefined; void checkpoint(); } };
   let completionChoices: Completion[] = [];
   let completionIndex = 0;
   let completionStart = 0;
   let completionSuppressedInput: string | undefined;
+  let historyIndex = -1;
+  let historyDraft = "";
   let pendingComposerResize: ReturnType<typeof setImmediate> | undefined;
   // OpenTUI emits content-changed while rendering. Resizing the split footer
   // inside that pass leaves the editor at its old viewport until another
@@ -354,6 +475,28 @@ export async function startTui(resumed?: Session): Promise<void> {
     }).catch(() => { modelCatalogs.delete(provider.id); });
   }
 
+  async function providerCatalog(providerId: string): Promise<Array<{ id: string; name: string; contextLength?: number }>> {
+    const provider = getProvider(providerId);
+    let catalog = modelCatalogs.get(provider.id);
+    if (!catalog) {
+      catalog = provider.listModels().catch((error) => {
+        modelCatalogs.delete(provider.id);
+        throw error;
+      });
+      modelCatalogs.set(provider.id, catalog);
+    }
+    return await catalog;
+  }
+
+  async function persistPreferences(update: () => void): Promise<void> {
+    try {
+      update();
+      await savePreferences(preferences);
+    } catch (error) {
+      writeGlance(`Could not save preferences: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async function checkpoint(): Promise<void> {
     try {
       await saveSession(session);
@@ -361,6 +504,53 @@ export async function startTui(resumed?: Session): Promise<void> {
       setNotice(`Could not save chat: ${error instanceof Error ? error.message : String(error)}`);
       writeGlance(`Could not save chat checkpoint: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  // Model catalogs across providers; failures cache a fallback so retries re-fetch.
+  const allModels = async (): Promise<Array<{ id: string; name: string; provider: string; label: string; contextLength?: number }>> => {
+    const results = await Promise.all(providers.map(async (provider) => {
+      try {
+        const models = await providerCatalog(provider.id);
+        return models.map((model) => ({ ...model, provider: provider.id, label: provider.label }));
+      } catch {
+        return [{ id: provider.defaultModel, name: provider.defaultModel, provider: provider.id, label: provider.label }];
+      }
+    }));
+    return results.flat();
+  };
+
+  // Which provider owns a model id; current provider wins ties.
+  async function providerCatalogOwner(model: string): Promise<string | undefined> {
+    const catalog = await allModels();
+    const exact = catalog.filter((entry) => entry.id === model);
+    if (exact.length) return (exact.find((entry) => entry.provider === activeProvider) ?? exact[0]!).provider;
+    const partial = catalog.filter((entry) => entry.id.includes(model) || entry.name.toLowerCase().includes(model.toLowerCase()));
+    if (partial.length === 1) return partial[0]!.provider;
+    return undefined;
+  }
+
+  // One code path for every model switch (typing, completion, or provider side).
+  async function selectModel(model: string): Promise<void> {
+    if (!model) {
+      writeGlance("Model name cannot be empty · /model lists all models");
+      return;
+    }
+    const owner = await providerCatalogOwner(model);
+    if (owner) applyModelSelection(owner, model);
+    else applyModelSelection(activeProvider, model); // Unknown ids keep the current provider.
+    const provider = getProvider(activeProvider);
+    setNotice(`Model: ${activeModel} · ${provider.label}${owner ? "" : " (not in catalog; provider unchanged)"}`);
+    await persistSelection();
+  }
+
+  // Switching model and provider together; context state resets because a new model means a new window.
+  function applyModelSelection(providerId: string, model: string): void {
+    activeProvider = providerId;
+    activeModel = model;
+    statusState.contextUsed = undefined;
+    statusState.contextLimit = undefined;
+    warnedContext = 0;
+    refreshContextLimit();
   }
 
   async function persistSelection(): Promise<void> {
@@ -450,11 +640,12 @@ export async function startTui(resumed?: Session): Promise<void> {
       // One dedicated row for the answer keys, even if the message wraps.
       permissionLines = Math.max(1, approvalText.virtualLineCount) + 3;
     }
-    const queuedLines = queuedCards.map(({ box, text }) => {
-      const width = Math.max(1, inputWidth() - 2 - 4);
-      const height = Math.max(1, ...text.plainText.split("\n").map((line) => Math.ceil([...line].length / width))) + 1;
+    const queuedLines = queuedCards.map(({ box, text }, index) => {
+      // Variable height: one row per wrapped line of each message, plus its border.
+      const height = Math.max(1, text.virtualLineCount) + 1;
       box.height = height;
       text.height = height - 1;
+      queuedCards[index]!.textHeight = height - 1;
       return height;
     }).reduce((sum, height) => sum + height, 0);
     const layout = footerLayout(rows, lines, suggestionLines, permissionLines, queuedLines, toolBatch.count ? 1 : 0);
@@ -471,8 +662,17 @@ export async function startTui(resumed?: Session): Promise<void> {
       approvalHint.visible = layout.permission >= 3;
       approvalText.visible = approvalText.height > 0;
     }
-    composer.height = layout.editor;
-    inputBox.height = layout.editor + layout.inputBorder;
+    // `editor` is the preferred draft size; `editorRows` is the portion that
+    // actually fits after footer rows such as approval and status. Rendering
+    // the preferred size here let the composer cover those rows.
+    composer.height = layout.editorRows;
+    inputBox.height = layout.editorRows + layout.inputBorder;
+    // The composer owns the split footer's size, so a long draft grows the
+    // input box up to the terminal instead of scrolling inside 9 rows.
+    // The footer contains activity, queue, status, and completion rows in
+    // addition to the input box.  Giving split-footer only the input height
+    // clips those siblings (including the status bar) below the viewport.
+    if (renderer.footerHeight !== layout.height) renderer.footerHeight = layout.height;
   }
 
   function renderCompletions(): void {
@@ -501,7 +701,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
     completionSuppressedInput = undefined;
     if (busy || !input.startsWith("/")) return showCompletions([], input);
-    const commandNames = ["help", "login", "model", "provider", "new", "retry", "paste-image"];
+    const commandNames = ["help", "login", "model", "name", "provider", "new", "retry", "paste-image"];
     const firstSpace = input.indexOf(" ");
     if (firstSpace < 0) {
       return showCompletions(matchChoices(input.slice(1), commandNames.map((name) => ({ insert: `/${name}${["help", "new", "retry", "paste-image"].includes(name) ? "" : " "}`, label: `/${name}` }))), input);
@@ -520,14 +720,18 @@ export async function startTui(resumed?: Session): Promise<void> {
       return showCompletions(matchChoices(query, choices), input);
     }
     if (command === "/model") {
-      const provider = getProvider(activeProvider);
-      let catalog = modelCatalogs.get(provider.id);
-      if (!catalog) {
-        catalog = provider.listModels().catch(() => [{ id: provider.defaultModel, name: provider.defaultModel }]);
-        modelCatalogs.set(provider.id, catalog);
+      // One list across providers; each entry shows its provider so selection can switch.
+      let models: Array<{ id: string; name: string; provider: string; label: string }>;
+      try {
+        models = await allModels();
+      } catch {
+        const provider = getProvider(activeProvider);
+        models = [{ id: provider.defaultModel, name: provider.defaultModel, provider: provider.id, label: provider.label }];
       }
-      const models = await catalog;
-      const choices = models.map((model) => ({ insert: `/model ${model.id}`, label: model.id === model.name ? model.id : `${model.id} · ${model.name}` }));
+      const choices = models.map((model) => ({
+        insert: `/model ${model.id}`,
+        label: `${model.id} · ${model.name === model.id ? model.label : `${model.name} (${model.label})`}`,
+      }));
       const matched = matchChoices(query, choices);
       if (!query) matched.sort((left, right) => Number(right.insert.endsWith(activeModel)) - Number(left.insert.endsWith(activeModel)));
       showCompletions(matched, input);
@@ -539,18 +743,22 @@ export async function startTui(resumed?: Session): Promise<void> {
   async function handleInput(text: string, fromQueue = false, images: ImageAttachment[] = []): Promise<void> {
     const input = text.trim();
     if (!input && !images.length) return;
-    if (!fromQueue && !input.startsWith("/")) lastMessageAt = Date.now();
+    if (!fromQueue && !input.startsWith("/")) {
+      lastMessageAt = Date.now();
+      lastEventAt = performance.now();
+    }
     if (busy || (queuedMessages.length && !fromQueue)) {
       if (input.startsWith("/")) {
         writeGlance("Commands are unavailable during a turn; finish or stop it first");
         return;
       }
-      queuedMessages.push({ content: input, images });
+      queuedMessages.push({ content: input, ...(images.length ? { images } : {}) });
+      persistQueue();
       renderQueue();
       return;
     }
     if (input === "/help") {
-      writeGlance("Commands: /new · /retry · /paste-image · /login · /provider · /model · /help; Ctrl+V image · Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit");
+      writeGlance("Commands: /new · /retry · /paste-image · /login · /provider · /model · /name · /help; Ctrl+V image · Enter send · Ctrl+J newline · Esc stop · Alt+↑ select queued · Alt+Enter edit queued · Alt+Backspace remove queued · Ctrl+C quit");
       return;
     }
     if (input === "/paste-image" && !images.length) {
@@ -560,6 +768,8 @@ export async function startTui(resumed?: Session): Promise<void> {
     if (input === "/new") {
       busy = true;
       composer.blur();
+      const controller = new AbortController();
+      turnController = controller;
       try {
         await saveSession(session);
         const oldId = session.id;
@@ -568,6 +778,16 @@ export async function startTui(resumed?: Session): Promise<void> {
         session = next;
         messages = next.messages;
         retryable = false;
+        toolBatch.flush(columns());
+        updatePendingTool();
+        // Replace the on-screen transcript with a blank slate. tmux saved lines
+        // keep the previous conversation for copy-mode; only the live surface resets.
+        try {
+          renderer.resetSplitFooterForReplay();
+          scrollbackHasOpenRow = false;
+        } catch {
+          // Renderer can be suspended mid-transition; the new session is still valid.
+        }
         statusState.contextUsed = undefined;
         warnedContext = 0;
         renderStatus();
@@ -575,14 +795,42 @@ export async function startTui(resumed?: Session): Promise<void> {
       } catch (error) {
         writeGlance(`Could not start new session (current session unchanged): ${error instanceof Error ? error.message : String(error)}`);
       } finally {
+        turnController = undefined;
         busy = false;
         composer.focus();
       }
       return;
     }
+    if (input === "/name") {
+      setNotice(`You: ${displayNames.user} · Agent: ${displayNames.agent}`);
+      writeGlance("Usage: /name you <name> · /name agent <name> (saved in preferences)");
+      return;
+    }
+    if (input.startsWith("/name ")) {
+      const match = input.slice("/name ".length).match(/^(you|agent)\s+(.+)$/i);
+      if (!match) {
+        writeGlance("Usage: /name you <name> · /name agent <name>");
+        return;
+      }
+      const [, target, name] = match;
+      const trimmed = name!.trim().slice(0, 40);
+      if (target!.toLowerCase() === "you") displayNames.user = trimmed;
+      else displayNames.agent = trimmed;
+      statusState.user = displayNames.user;
+      inputBox.title = `${displayNames.user}${draftImages.length ? ` · ${draftImages.length} image${draftImages.length === 1 ? "" : "s"} attached` : ""}`;
+      inputBox.titleColor = transcriptColors.assistant;
+      renderStatus();
+      writeGlance(`Renamed: you are “${displayNames.user}”, the agent is “${displayNames.agent}”`);
+      void persistPreferences(async () => {
+        preferences.names ??= {};
+        preferences.names.user = displayNames.user;
+        preferences.names.agent = displayNames.agent;
+      });
+      return;
+    }
     if (input === "/model") {
       setNotice(`${getProvider(activeProvider).label} · ${activeModel}`);
-      writeGlance(`Current model: ${activeModel}`);
+      writeGlance("Pick from all models with /model <query> · Tab completes · choosing a model switches to its provider");
       return;
     }
     if (input === "/login codex" || input === "/login openai-codex" || input === "/login openai_codex") {
@@ -634,29 +882,19 @@ export async function startTui(resumed?: Session): Promise<void> {
       const id = requested === "codex" ? "openai-codex" : requested;
       try {
         const provider = getProvider(id);
-        activeProvider = provider.id;
-        activeModel = preferences.models?.[provider.id] ?? provider.defaultModel;
-        statusState.contextUsed = undefined;
-        statusState.contextLimit = undefined;
-        warnedContext = 0;
-        refreshContextLimit();
+        applyModelSelection(provider.id, preferences.models?.[provider.id] ?? provider.defaultModel);
         setNotice(provider.id === "openrouter" && !await provider.isConfigured()
           ? "Use /login openrouter_api_key to connect OpenRouter"
           : `${provider.label} selected`);
         await persistSelection();
-      } catch (error) {
-        setNotice(error instanceof Error ? error.message : String(error));
+      } catch {
+        // Not a provider id; maybe a model id, which also selects its provider.
+        await selectModel(input.slice("/provider ".length).trim());
       }
       return;
     }
     if (input.startsWith("/model ")) {
-      activeModel = input.slice("/model ".length).trim();
-      statusState.contextUsed = undefined;
-      statusState.contextLimit = undefined;
-      warnedContext = 0;
-      refreshContextLimit();
-      setNotice(activeModel ? "Model updated" : "Model name cannot be empty");
-      if (activeModel) await persistSelection();
+      await selectModel(input.slice("/model ".length).trim());
       return;
     }
 
@@ -691,13 +929,15 @@ export async function startTui(resumed?: Session): Promise<void> {
 
     if (fromQueue) {
       queuedMessages.shift();
+      queuedSelected = -1;
+      persistQueue();
       renderQueue();
     }
     const turnStart = messages.length;
     if (!retry) {
       const userMessage = { role: "user" as const, content: input, ...(images.length ? { images } : {}) };
       messages.push(userMessage);
-      writeScrollback(chatBox("user", imageLabel(userMessage), columns()), transcriptColors.user);
+      writeScrollback(chatBox("user", imageLabel(userMessage), columns(), displayNames.user, displayNames), transcriptColors.user);
     }
     retryable = false;
     const controller = new AbortController();
@@ -727,7 +967,7 @@ export async function startTui(resumed?: Session): Promise<void> {
           stopWorking();
           messages.push({ role: "assistant", content: answer });
           await checkpoint();
-          if (answer) writeScrollback(chatBox("assistant", answer, columns(), provider.label), transcriptColors.assistant);
+          if (answer) writeStyledScrollback(markdownBox(answer, columns(), displayNames.agent, transcriptColors.assistant));
           setNotice("ready");
           return;
         }
@@ -735,11 +975,14 @@ export async function startTui(resumed?: Session): Promise<void> {
         messages.push({ role: "assistant", content: answer, toolCalls: result.toolCalls });
         if (answer) {
           flushToolBatch();
-          writeScrollback(chatBox("assistant", answer, columns(), provider.label), transcriptColors.assistant);
+          writeStyledScrollback(markdownBox(answer, columns(), displayNames.agent, transcriptColors.assistant));
         }
         for (const call of result.toolCalls) {
           controller.signal.throwIfAborted();
           startWorking(`running ${call.name}`);
+          // Time since the previous event (message, tool round, or user send);
+          // a 0s call means the model streamed it immediately after the last event.
+          const sinceLastEvent = lastEventAt === undefined ? 0 : performance.now() - lastEventAt;
           const toolStartedAt = performance.now();
           let toolResult: string;
           try {
@@ -763,7 +1006,8 @@ export async function startTui(resumed?: Session): Promise<void> {
           // Clear the previous preview before committing it to scrollback.
           // Otherwise the same line briefly appears in both places.
           if (toolBatch.count && toolBatch.label !== toolTarget(call)) flushToolBatch();
-          toolBatch.add(call, toolResult, columns(), performance.now() - toolStartedAt);
+          toolBatch.add(call, toolResult, columns(), Math.max(performance.now() - toolStartedAt, sinceLastEvent));
+          lastEventAt = performance.now();
           updatePendingTool();
         }
         void readGitStatus(statusState.cwd).then((git) => { statusState.git = git; renderStatus(); });
@@ -810,10 +1054,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       composer.focus();
       // A cancelled or failed turn must not strand its queued follow-ups.
       // Start the next send synchronously, claiming busy before any await.
-      if (!statusClosed && queuedMessages.length) {
-        const next = queuedMessages[0]!;
-        void handleInput(next.content, true, next.images);
-      }
+      sendNextQueued();
     }
   }
 
@@ -831,7 +1072,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   }
 
   function updateDraftImages(): void {
-    inputBox.title = draftImages.length ? `You · ${draftImages.length} image${draftImages.length === 1 ? "" : "s"} attached` : "You";
+    inputBox.title = draftImages.length ? `${displayNames.user} · ${draftImages.length} image${draftImages.length === 1 ? "" : "s"} attached` : displayNames.user;
     composer.placeholder = "";
     renderStatus();
   }
@@ -866,6 +1107,17 @@ export async function startTui(resumed?: Session): Promise<void> {
         draftImages = [];
         updateDraftImages();
       }
+      // Editing a queued card resubmits it in place; anything else appends to the queue.
+      if (queuedEditing >= 0) {
+        const index = queuedEditing;
+        queuedEditing = -1;
+        queuedMessages[index] = { content: message.trim(), ...(images.length ? { images } : {}) };
+        persistQueue();
+        renderQueue();
+        writeGlance(`Updated queued message · sends when the current turn ends (${queuedMessages.length} queued)`);
+        sendNextQueued();
+        return;
+      }
       void handleInput(message, false, images);
     },
   });
@@ -898,16 +1150,56 @@ export async function startTui(resumed?: Session): Promise<void> {
       void pasteImage();
       return;
     }
+    if (queuedMessages.length && key.alt && key.name === "up") {
+      key.preventDefault();
+      selectQueue();
+      return;
+    }
+    if (queuedMessages.length && key.alt && (key.name === "down" || key.name === "return")) {
+      key.preventDefault();
+      editQueued();
+      return;
+    }
+    if (queuedMessages.length && key.alt && key.name === "backspace") {
+      key.preventDefault();
+      removeQueued();
+      return;
+    }
     if ((key.name === "escape" || key.name === "esc") && turnController) {
+      // Esc while editing a queued card cancels the edit instead of the turn.
+      if (queuedEditing >= 0) {
+        key.preventDefault();
+        cancelQueuedEdit();
+        return;
+      }
       turnController.abort();
       stopWorking();
       setNotice("Stopping…");
     }
   });
   composer.onKeyDown = (key) => {
+    if ((key.name === "escape" || key.name === "esc") && queuedEditing >= 0) {
+      key.preventDefault();
+      cancelQueuedEdit();
+      return;
+    }
     if (completionChoices.length > 0 && (key.name === "up" || key.name === "down")) {
       key.preventDefault();
       moveCompletion(key.name === "down" ? 1 : -1);
+      return;
+    }
+    if ((key.name === "up" || key.name === "down") && !key.ctrl && !key.alt) {
+      const history = messages.filter((message) => message.role === "user").map((message) => message.content);
+      if (!history.length) return;
+      key.preventDefault();
+      if (historyIndex < 0) {
+        if (key.name === "down") return;
+        historyDraft = composer.plainText;
+        historyIndex = history.length;
+      }
+      historyIndex = Math.max(0, Math.min(history.length, historyIndex + (key.name === "up" ? -1 : 1)));
+      composer.setText(historyIndex === history.length ? historyDraft : history[historyIndex]!);
+      composer.cursorOffset = composer.plainText.length;
       return;
     }
     if (completionChoices.length > 0 && key.name === "return") {
@@ -915,17 +1207,11 @@ export async function startTui(resumed?: Session): Promise<void> {
       const currentInput = composer.plainText;
       if (currentInput.startsWith("/model ") && choice.insert.length > "/model ".length) {
         key.preventDefault();
-        activeModel = choice.insert.slice("/model ".length);
-        statusState.contextUsed = undefined;
-        statusState.contextLimit = undefined;
-        warnedContext = 0;
-        refreshContextLimit();
-        setNotice("Model selected");
-        void persistSelection();
         composer.setText("");
         completionChoices = [];
         completionSuppressedInput = undefined;
         renderCompletions();
+        void selectModel(choice.insert.slice("/model ".length));
         return;
       }
       if ((currentInput.startsWith("/provider ") && choice.insert.length > "/provider ".length)
@@ -989,7 +1275,8 @@ export async function startTui(resumed?: Session): Promise<void> {
 
   writeGlance(`GMKRES · ${providers.map((provider) => provider.id).join(", ")} · /help`);
   writeGlance(`Session: ${session.id}${resumed ? " (resumed)" : ""}`);
-  if (resumed) for (const entry of historyEntries(messages, columns())) {
-    writeScrollback(entry.text, transcriptColors[entry.role]);
+  if (resumed) for (const entry of historyEntries(messages, columns(), displayNames)) {
+    if (entry.styled) writeStyledScrollback(entry.styled);
+    else writeScrollback(entry.text, transcriptColors[entry.role]);
   }
 }

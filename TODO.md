@@ -12,23 +12,27 @@
 - [x] rename (at least in the display) run_command to cmd
 - [x] local clipboard image paste (Ctrl+V or /paste-image; host clipboard, not terminal transport)
 - [x] hitting "y" in a confirmation prompt does but should not fill the input box
-- [ ] persist queued messages across restart and allow editing/removing queued messages
-- [ ] render markdown
+- [x] persist queued messages across restart and allow editing/removing queued messages
+- [x] render markdown
+- [x] too many lines in the input box scrolls the input. that's weird, should grow to accommodate instead
+- [x] it looks like on restore it calls agent "assistant". let's rename to "agent"
+- [x] i want to be able to rename myself and the agent
+- [x] queued message should have variable height. and the whole thing, including contents, should be the same "faded gray" color
+- [x] every toolcall says 0s. it should probably be like "time since last thing
+- [x] /new should clear the chat history in the screen. right now it just prints a new session id
+- [x] model selection is weird. you shouldn't have to specify a provider, /model should show all model options, along with their providers, and selecting the model should also set the associated provider.
+- [x] timer showing how long worked
+
 - [ ] general "make it look good"
 - [ ] interactive scroll back, show hide thinking etc, expand something to full screen (for terminal multiline copy)
 - [ ] up to go through previous messages
-- [ ] too many lines in the input box scrolls the input. that's weird, should grow to accommodate instead
 - [ ] worktrees babyyyy
 - [ ] retry on error?
 - [ ] better git integration
-- [ ] cmd line, like my nvim `:`
-- [ ] timer showing how long worked
 - [ ] log failures and improve them
-- [ ] it looks like on restore it calls agent "assistant". let's rename to "agent"
-- [ ] i want to be able to rename myself and the agent
-- [ ] queued message should have variable height. and the whole thing, including contents, should be the same "faded gray" color
 - [ ] we get stuck sometimes. why. what's going on
 - [ ] it doesn't load models? i authed on a new computer and /model doesn't populate anything
-- [ ] every toolcall says 0s. it should probably be like "time since last thing
-- [ ] /new should clear the chat history in the screen. right now it just prints a new session id
-- [ ] model selection is weird. you shouldn't have to specify a provider, /model should show all model options, along with their providers, and selecting the model should also set the associated provider.
+- [ ] risky tool approval renders too low. sometimes it's cut off, and even when it's not it's too low. it should be above the input but it covers the input
+- [ ] i want modes so that i can auto accept risky tool calls. probably except for _super_ risky ones
+
+- [-] explore cmd palette

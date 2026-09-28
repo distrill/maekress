@@ -2,9 +2,12 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { ModelMessage } from "./providers/types.ts";
+import type { ImageAttachment, ModelMessage } from "./providers/types.ts";
 
 const directory = path.join(homedir(), ".config", "gmkres", "sessions");
+
+// Messages typed while a turn runs; persisted so a restart keeps them.
+export type QueuedMessage = { content: string; images?: ImageAttachment[] };
 
 export type Session = {
   version: 1;
@@ -13,7 +16,15 @@ export type Session = {
   provider: string;
   model: string;
   messages: ModelMessage[];
+  queue?: QueuedMessage[];
 };
+
+function validImages(images: unknown): images is ImageAttachment[] {
+  return Array.isArray(images) && images.every((image) => image
+    && ["image/png", "image/jpeg", "image/webp"].includes(image.mimeType)
+    && typeof image.data === "string" && image.data.length > 0 && image.data.length <= 7_000_000
+    && /^[A-Za-z0-9+/]+={0,2}$/.test(image.data));
+}
 
 export function newSession(projectRoot: string, provider: string, model: string, systemPrompt: string): Session {
   return {
@@ -41,10 +52,9 @@ export async function loadSession(id: string): Promise<Session> {
     || !Array.isArray(session.messages) || !session.messages.length
     || !session.messages.every((message) => message && typeof message.content === "string"
       && ["system", "user", "assistant", "tool"].includes(message.role)
-      && (message.images === undefined || (message.role === "user" && Array.isArray(message.images)
-        && message.images.every((image) => image && ["image/png", "image/jpeg", "image/webp"].includes(image.mimeType)
-          && typeof image.data === "string" && image.data.length > 0 && image.data.length <= 7_000_000
-          && /^[A-Za-z0-9+/]+={0,2}$/.test(image.data)))))) {
+      && (message.images === undefined || (message.role === "user" && validImages(message.images))))
+    || (session.queue !== undefined && !(Array.isArray(session.queue) && session.queue.every((entry) => entry
+      && typeof entry.content === "string" && (entry.images === undefined || validImages(entry.images)))))) {
     throw new Error("Session file is invalid or unsupported.");
   }
   return session;

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { homedir, hostname, userInfo } from "node:os";
+import { homedir, hostname } from "node:os";
 import { sep } from "node:path";
 import { promisify } from "node:util";
 
@@ -15,6 +15,7 @@ export type StatusState = {
   cwd: string;
   provider: string;
   model: string;
+  user?: string;
   contextUsed?: number;
   contextLimit?: number;
   git?: string;
@@ -32,7 +33,7 @@ export function contextWarning(state: StatusState): ContextWarning {
 // statusOrder to display it.
 export type StatusModule = (state: StatusState) => string | undefined;
 export const statusModules: Record<string, StatusModule> = {
-  identity: () => `${userInfo().username}@${hostname()}`,
+  identity: (state) => [state.user, hostname()].filter(Boolean).join("@"),
   cwd: (state) => displayCwd(state.cwd),
   git: (state) => state.git,
   model: (state) => `${state.model} | ${state.provider}`,

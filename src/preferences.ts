@@ -8,6 +8,7 @@ const configPath = path.join(configDirectory, "config.json");
 export type Preferences = {
   provider?: string;
   models?: Record<string, string>;
+  names?: { user?: string; agent?: string };
 };
 
 export async function loadPreferences(): Promise<Preferences> {

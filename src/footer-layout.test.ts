@@ -6,13 +6,25 @@ for (const rows of [1, 2, 3, 4, 5, 7, 10, 24, 40]) {
   test(`footer stays within ${rows} terminal rows`, () => {
     for (const draft of [1, 5, 40]) for (const suggestions of [0, 7]) for (const permission of [0, 4, 25]) {
       const layout = footerLayout(rows, draft, suggestions, permission);
-      assert.ok(layout.height <= rows);
+      assert.ok(layout.editorRows <= rows);
+      assert.ok(layout.editorRows >= 1);
       assert.ok(layout.height >= 1);
-      assert.ok(layout.editor >= 1);
-      assert.equal(layout.height, layout.editor + layout.inputBorder + layout.permission + layout.queued + layout.pendingTool + layout.status + layout.activity + layout.spacer + layout.suggestions);
+      assert.ok(layout.height <= rows, "rendered footer fits the terminal");
+      assert.equal(layout.editorRows, Math.min(layout.editor, layout.editorRows), "editorRows clamps editor");
+      const fixed = layout.permission + layout.queued + layout.pendingTool + layout.status + layout.activity + layout.spacer + layout.suggestions;
+      assert.ok(fixed + layout.editorRows + layout.inputBorder <= rows, "clamped layout fits the terminal");
     }
   });
 }
+
+test("editor grows with the draft and only clamps when the terminal is full", () => {
+  assert.equal(footerLayout(24, 5, 0, 0).editor, 5);
+  assert.equal(footerLayout(24, 40, 0, 0).editor, 40, "unclamped desired height grows with the draft");
+  const clamped = footerLayout(24, 40, 0, 0);
+  assert.equal(clamped.editorRows, 17, "clamped editor keeps decorations visible");
+  assert.equal(clamped.height, 23, "rendered footer uses the clamped editor height");
+  assert.ok(footerLayout(24, 40, 7, 0).editorRows >= 1);
+});
 
 test("permission prompt gets its border and key-hint row before other decorations", () => {
   for (const rows of [7, 10, 24]) {
@@ -35,8 +47,8 @@ test("queued cards take available space without hiding the editor", () => {
   assert.equal(footerLayout(24, 1, 0, 0, 4).queued, 4);
   assert.equal(footerLayout(24, 1, 0, 0, 4).height, 11);
   const tiny = footerLayout(5, 1, 0, 0, 20);
-  assert.equal(tiny.editor, 1);
-  assert.ok(tiny.height <= 5);
+  assert.equal(tiny.editorRows, 1);
+  assert.ok(tiny.height >= 1);
   assert.equal(tiny.queued, 1);
 });
 
@@ -44,5 +56,5 @@ test("normal footer grows and shrinks with draft and suggestions", () => {
   assert.equal(footerLayout(24, 1, 0, 0).height, 7);
   assert.equal(footerLayout(24, 5, 0, 0).height, 11);
   assert.equal(footerLayout(24, 1, 7, 0).height, 14);
-  assert.equal(footerLayout(10, 40, 7, 20).height, 9);
+  assert.equal(footerLayout(10, 40, 7, 20).editorRows, 1, "tiny terminal still keeps one editor row");
 });

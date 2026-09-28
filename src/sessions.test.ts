@@ -13,6 +13,13 @@ test("session checkpoint and resume preserve messages and selection", async () =
   assert.deepEqual(await loadSession(session.id), session);
 });
 
+test("queued messages persist across save and resume", async () => {
+  const session = newSession(process.cwd(), "openai-codex", "example-model", "instructions");
+  session.queue = [{ content: "first" }, { content: "second", images: [{ mimeType: "image/png", data: "aGk=" }] }];
+  await saveSession(session);
+  assert.deepEqual(await loadSession(session.id), session);
+});
+
 test("reject malformed and nonexistent resume IDs", async () => {
   await assert.rejects(loadSession("../auth.json"), /Invalid resume ID/);
   await assert.rejects(loadSession("0".repeat(32)), /No session found/);

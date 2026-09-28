@@ -25,7 +25,7 @@ test("Git footer shows cwd, clean state, branch, and counts files once", async (
     git(cwd, "mv", "rename", "renamed");
     await writeFile(join(cwd, "new file"), "new");
     assert.equal(await readGitStatus(cwd), "2' 1- 1+  ·  my-long-branch-name");
-    const line = formatStatus({ cwd, provider: "Codex", model: "model", git: await readGitStatus(cwd) });
+    const line = formatStatus({ cwd, provider: "Codex", model: "model", user: userInfo().username, git: await readGitStatus(cwd) });
     const identity = `${userInfo().username}@${hostname()}`;
     assert.equal(line, `${identity}  ·  model | Codex  ·  ctx: 0%\n${cwd}  ·  2' 1- 1+  ·  my-long-branch-name`);
   } finally {
@@ -34,7 +34,7 @@ test("Git footer shows cwd, clean state, branch, and counts files once", async (
 });
 
 test("main status shows model and context, defaulting to zero before usage arrives", () => {
-  const state = { cwd: homedir(), provider: "OpenAI Codex", model: "gpt-5.5" };
+  const state = { cwd: homedir(), provider: "OpenAI Codex", model: "gpt-5.5", user: userInfo().username };
   const prefix = `${userInfo().username}@${hostname()}  ·  gpt-5.5 | OpenAI Codex`;
   assert.equal(formatStatus(state), `${prefix}  ·  ctx: 0%`);
   assert.equal(formatStatus({ ...state, contextLimit: 1000 }), `${prefix}  ·  ctx: 0%`);
@@ -57,7 +57,7 @@ test("context warning levels use observed request usage only", () => {
 
 test("Git footer abbreviates only paths inside home", () => {
   const home = homedir();
-  const state = { cwd: home, provider: "Codex", model: "model", git: "✓ clean  ·  main" };
+  const state = { cwd: home, provider: "Codex", model: "model", user: userInfo().username, git: "✓ clean  ·  main" };
   const footer = (cwd: string) => formatStatus({ ...state, cwd }).split("\n")[1];
   assert.equal(footer(home), "~  ·  ✓ clean  ·  main");
   assert.equal(footer(join(home, "dev", "project")), `~${sep}dev${sep}project  ·  ✓ clean  ·  main`);
