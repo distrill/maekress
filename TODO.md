@@ -28,3 +28,7 @@
 - [ ] i want to be able to rename myself and the agent
 - [ ] queued message should have variable height. and the whole thing, including contents, should be the same "faded gray" color
 - [ ] we get stuck sometimes. why. what's going on
+- [ ] it doesn't load models? i authed on a new computer and /model doesn't populate anything
+- [ ] every toolcall says 0s. it should probably be like "time since last thing
+- [ ] /new should clear the chat history in the screen. right now it just prints a new session id
+- [ ] model selection is weird. you shouldn't have to specify a provider, /model should show all model options, along with their providers, and selecting the model should also set the associated provider.

@@ -47,7 +47,7 @@ npm install
 npm start
 ```
 
-Inside the TUI, use `Ctrl+K` to open the floating command palette (type to filter, arrow keys to choose, Tab to complete, Enter to run, Esc to close without changing your draft). Use `Enter` to submit a message, `Ctrl+J` for a newline, `Esc`
+Inside the TUI, type `/` to get inline command suggestions (arrow keys to choose, Tab to complete, Enter to run). Use `Enter` to submit a message, `Ctrl+J` for a newline, `Esc`
 to interrupt an active model turn or shell command, and `Ctrl+C` to quit.
 Use `Ctrl+V` or `/paste-image` to attach an image from the **local host clipboard**
 (PNG, JPEG, or WebP, up to 5 MiB). The input title shows the attachment count;

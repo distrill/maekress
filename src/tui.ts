@@ -142,25 +142,6 @@ export async function startTui(resumed?: Session): Promise<void> {
     gap: 0,
   });
 
-  // Split-footer redraws only the footer; reserve space above the composer for the palette.
-  const paletteSpace = new BoxRenderable(renderer, { id: "palette-space", width: "100%", height: 0, flexShrink: 0 });
-  const paletteBox = new BoxRenderable(renderer, {
-    id: "command-palette", position: "absolute", zIndex: 10, width: 48, height: 5,
-    border: true, borderStyle: "rounded", borderColor: "#8BD5CA",
-    title: "Command", titleColor: "#8BD5CA", flexDirection: "column", visible: false,
-  });
-  const paletteEditor = new TextareaRenderable(renderer, {
-    id: "palette-editor", width: "100%", height: 1, wrapMode: "none",
-    placeholder: "Search commands…", placeholderColor: "#747C91",
-    textColor: "#E5E9F0", cursorColor: "#8BD5CA",
-    backgroundColor: "transparent", focusedBackgroundColor: "transparent",
-  });
-  const paletteMatches = new TextRenderable(renderer, {
-    content: "", fg: "#A6ADC8", width: "100%", height: 1, wrapMode: "none",
-  });
-  paletteBox.add(paletteEditor);
-  paletteBox.add(paletteMatches);
-
   const inputWidth = () => Math.max(1, renderer.width - 2);
   const inputBox = new BoxRenderable(renderer, {
     id: "input-box",
@@ -342,106 +323,6 @@ export async function startTui(resumed?: Session): Promise<void> {
   let completionStart = 0;
   let completionSuppressedInput: string | undefined;
   let pendingComposerResize: ReturnType<typeof setImmediate> | undefined;
-  const paletteCommands = ["help", "new", "retry", "paste-image", "login", "provider", "model"];
-  let paletteOpen = false;
-  let paletteChoices: Completion[] = [];
-  let paletteIndex = 0;
-  let paletteGeneration = 0;
-  function paintPalette(): void {
-    const count = Math.min(5, paletteChoices.length);
-    const start = Math.max(0, Math.min(paletteIndex - 3, paletteChoices.length - count));
-    paletteMatches.content = paletteChoices.length
-      ? paletteChoices.slice(start, start + count).map((choice, i) =>
-        `${start + i === paletteIndex ? "›" : " "} ${choice.label}`).join("\n")
-      : "  No matches";
-    paletteMatches.height = Math.max(1, count);
-    paletteBox.height = paletteMatches.height + 3;
-    scheduleComposerResize();
-  }
-  async function updatePalette(): Promise<void> {
-    if (!paletteOpen) return;
-    const generation = ++paletteGeneration;
-    const input = paletteEditor.plainText.trimStart().replace(/^\//, "");
-    const space = input.indexOf(" ");
-    let choices: Completion[];
-    if (space < 0) {
-      choices = matchChoices(input, paletteCommands.map((name) => ({ insert: name, label: name })));
-    } else {
-      const command = input.slice(0, space);
-      const query = input.slice(space + 1).trimStart();
-      if (command === "provider") {
-        choices = matchChoices(query, [
-          { insert: "provider codex", label: "codex · OpenAI Codex" },
-          { insert: "provider openrouter", label: "openrouter · OpenRouter" },
-        ]);
-      } else if (command === "login") {
-        choices = matchChoices(query, ["openai_codex", "openrouter_api_key"].map((name) => ({
-          insert: `login ${name}`, label: name,
-        })));
-      } else if (command === "model") {
-        const provider = getProvider(activeProvider);
-        let catalog = modelCatalogs.get(provider.id);
-        if (!catalog) {
-          catalog = provider.listModels().catch(() => [{ id: provider.defaultModel, name: provider.defaultModel }]);
-          modelCatalogs.set(provider.id, catalog);
-        }
-        const models = await catalog;
-        choices = matchChoices(query, models.map((model) => ({
-          insert: `model ${model.id}`, label: model.id === model.name ? model.id : `${model.id} · ${model.name}`,
-        })));
-      } else choices = [];
-    }
-    if (!paletteOpen || generation !== paletteGeneration) return;
-    paletteChoices = choices;
-    paletteIndex = 0;
-    paintPalette();
-  }
-  paletteEditor.onContentChange = () => { void updatePalette(); };
-  function closePalette(): void {
-    paletteOpen = false;
-    paletteGeneration++;
-    paletteBox.visible = false;
-    paletteEditor.blur();
-    composer.focus();
-    scheduleComposerResize();
-  }
-  function openPalette(): void {
-    if (paletteOpen || resolveToolConfirmation) return;
-    paletteOpen = true;
-    composer.blur();
-    paletteEditor.setText("");
-    paletteBox.visible = true;
-    paletteEditor.focus();
-    void updatePalette();
-    scheduleComposerResize();
-  }
-  paletteEditor.onKeyDown = (key) => {
-    if (key.name === "escape" || key.name === "esc") {
-      key.preventDefault();
-      closePalette();
-    } else if (key.name === "up" || key.name === "down") {
-      key.preventDefault();
-      if (paletteChoices.length) {
-        paletteIndex = (paletteIndex + (key.name === "down" ? 1 : -1) + paletteChoices.length) % paletteChoices.length;
-        paintPalette();
-      }
-    } else if (key.name === "tab" || key.name === "return") {
-      key.preventDefault();
-      const raw = paletteEditor.plainText.trim().replace(/^\//, "");
-      const selected = paletteChoices[paletteIndex]?.insert;
-      const command = raw.includes(" ") ? raw.split(" ")[0] : selected;
-      if (!command) return;
-      const needsArgument = ["login", "provider", "model"].includes(command);
-      if (key.name === "tab" || (needsArgument && !raw.includes(" "))) {
-        paletteEditor.setText(`${selected ?? command}${needsArgument && !(selected ?? command).includes(" ") ? " " : ""}`);
-        paletteEditor.cursorOffset = paletteEditor.plainText.length;
-        return;
-      }
-      const action = selected ?? raw;
-      closePalette();
-      void handleInput(`/${action}`);
-    }
-  };
   // OpenTUI emits content-changed while rendering. Resizing the split footer
   // inside that pass leaves the editor at its old viewport until another
   // render (often the next keypress). Lay out after the pass instead.
@@ -592,12 +473,6 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
     composer.height = layout.editor;
     inputBox.height = layout.editor + layout.inputBorder;
-    const extra = paletteOpen ? Math.min(Math.max(0, rows - layout.height - 1), Math.max(8, Math.floor(rows / 2) - layout.height)) : 0;
-    paletteSpace.height = extra;
-    paletteBox.width = Math.min(64, Math.max(12, renderer.width - 4));
-    paletteBox.left = Math.max(0, Math.floor((renderer.width - paletteBox.width) / 2));
-    paletteBox.top = Math.max(0, extra - paletteBox.height);
-    if (renderer.footerHeight !== layout.height + extra) renderer.footerHeight = layout.height + extra;
   }
 
   function renderCompletions(): void {
@@ -675,7 +550,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       return;
     }
     if (input === "/help") {
-      writeGlance("Commands: Ctrl+K palette · /new · /retry · /paste-image · /login · /provider · /model · /help; Ctrl+V image · Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit");
+      writeGlance("Commands: /new · /retry · /paste-image · /login · /provider · /model · /help; Ctrl+V image · Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit");
       return;
     }
     if (input === "/paste-image" && !images.length) {
@@ -1018,13 +893,6 @@ export async function startTui(resumed?: Session): Promise<void> {
       }
       return;
     }
-    if (key.name === "k" && key.ctrl) {
-      key.preventDefault();
-      if (paletteOpen) closePalette();
-      else openPalette();
-      return;
-    }
-    if (paletteOpen) return;
     if (key.name === "v" && key.ctrl) {
       key.preventDefault();
       void pasteImage();
@@ -1092,7 +960,6 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
   };
 
-  footer.add(paletteSpace);
   footer.add(pendingToolView);
   footer.add(activityView);
   footer.add(activitySpacer);
@@ -1103,7 +970,6 @@ export async function startTui(resumed?: Session): Promise<void> {
   footer.add(inputBox);
   footer.add(status);
   renderer.root.add(footer);
-  renderer.root.add(paletteBox);
   renderer.on("resize", resizeComposer);
   resizeComposer();
   composer.focus();
