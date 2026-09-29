@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { ImageAttachment, ModelMessage } from "./providers/types.ts";
 
-const directory = path.join(homedir(), ".config", "gmkres", "sessions");
+const directory = path.join(homedir(), ".config", "maekress", "sessions");
 
 // Messages typed while a turn runs; persisted so a restart keeps them.
 export type QueuedMessage = { content: string; images?: ImageAttachment[] };

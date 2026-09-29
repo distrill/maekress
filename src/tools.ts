@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { open, readdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { readSkill, resolveAgentContext } from "./agents.ts";
 
 const execAsync = promisify(exec);
 
@@ -186,6 +187,37 @@ async function collectFiles(directory: string, relative = ""): Promise<string[]>
 
 const builtinTools: HarnessTool[] = [
   {
+    name: "agent_context",
+    description: "Get applicable maekress agent instructions and available skills for a project path. Resolve this before changing files.",
+    inputSchema: {
+      type: "object",
+      properties: { path: { type: "string", description: "Target file or directory relative to the project root; defaults to the root." } },
+      additionalProperties: false,
+    },
+    async execute(input, context) {
+      const target = typeof input.path === "string" ? input.path : ".";
+      const resolved = await resolveAgentContext(context.projectRoot, target);
+      const instructions = resolved.instructions.length
+        ? resolved.instructions.map((file) => `--- ${file.path} ---\n${file.content}`).join("\n\n")
+        : "(no applicable agent guidance)";
+      const skills = resolved.skills.length ? resolved.skills.map((skill) => `- ${skill}`).join("\n") : "(no skills found)";
+      return `Applicable agent guidance (broadest to most specific):\n${instructions}\n\nAvailable skills:\n${skills}`;
+    },
+  },
+  {
+    name: "read_skill",
+    description: "Read a skill listed by agent_context.",
+    inputSchema: {
+      type: "object",
+      properties: { path: { type: "string", description: "Exact skill path returned by agent_context." } },
+      required: ["path"],
+      additionalProperties: false,
+    },
+    async execute(input, context) {
+      return readSkill(context.projectRoot, stringInput(input, "path"));
+    },
+  },
+  {
     name: "list_files",
     description: "List project files under a directory, excluding common generated folders.",
     inputSchema: {
@@ -362,6 +394,89 @@ const builtinTools: HarnessTool[] = [
       const fileStats = await stat(target);
       await atomicReplace(target, contents.slice(0, firstMatch) + newText + contents.slice(firstMatch + oldText.length), fileStats.mode & 0o777);
       return `Updated ${path.relative(context.projectRoot, target)}.`;
+    },
+  },
+  {
+    name: "web_fetch",
+    description: "Fetch a URL and return its contents. HTML pages are converted to readable text; JSON and other formats are returned as-is.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "URL to fetch (must start with http:// or https://)." },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+    async execute(input, context) {
+      const url = stringInput(input, "url");
+      if (!/^https?:\/\//i.test(url)) throw new Error("URL must start with http:// or https://.");
+      const response = await fetch(url, {
+        signal: context.signal,
+        redirect: "follow",
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; maekress/0.1)", Accept: "text/html, application/json, text/plain, */*" },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      const contentType = response.headers.get("content-type") ?? "";
+      const body = (await response.text()).slice(0, outputLimit * 4);
+      if (!/html/i.test(contentType)) return body.slice(0, outputLimit);
+      // Strip HTML to readable text: remove scripts/styles, tags, decode common entities, collapse whitespace.
+      const text = body
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<(br|hr|\/p|\/div|\/tr|\/li|\/h[1-6])\b[^>]*>/gi, "\n")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n[ \t]+/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      return text.slice(0, outputLimit);
+    },
+  },
+  {
+    name: "web_search",
+    description: "Search the web and return results with titles, URLs, and descriptions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    async execute(input, context) {
+      const query = stringInput(input, "query");
+      if (!query.trim()) throw new Error("Search query cannot be empty.");
+      // Exa MCP: free, keyless web search via JSON-RPC over SSE.
+      const rpcBody = JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "web_search_exa", arguments: { query } },
+      });
+      const response = await fetch("https://mcp.exa.ai/mcp", {
+        method: "POST", signal: context.signal,
+        headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+        body: rpcBody,
+      });
+      if (!response.ok) throw new Error(`Exa MCP returned ${response.status}: ${response.statusText}`);
+      const sse = await response.text();
+      // Parse SSE: find the data line containing the JSON-RPC result.
+      for (const line of sse.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice("data:".length).trim();
+        if (!payload) continue;
+        try {
+          const rpc = JSON.parse(payload) as { result?: { content?: Array<{ text?: string }> }; error?: { message?: string } };
+          if (rpc.error) throw new Error(`Exa: ${rpc.error.message}`);
+          if (rpc.result?.content?.length) {
+            return rpc.result.content.map((c) => c.text ?? "").join("\n").slice(0, outputLimit);
+          }
+        } catch (error) {
+          if (error instanceof SyntaxError) continue;
+          throw error;
+        }
+      }
+      return "No results found.";
     },
   },
   {

@@ -31,7 +31,7 @@ export type ProviderRequest = {
 export type ProviderTurn = { toolCalls: ToolCall[]; inputTokens?: number };
 
 export type ModelProvider = {
-  id: "openai-codex" | "openrouter";
+  id: "openai-codex" | "openrouter" | "anthropic";
   label: string;
   defaultModel: string;
   isConfigured: () => Promise<boolean>;

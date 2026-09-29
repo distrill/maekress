@@ -1,4 +1,4 @@
-# Gmkres Harness
+# maekress Harness
 
 A personal, hackable harness for making games. See [GOALS.md](./GOALS.md) for
 the longer-term direction.
@@ -17,7 +17,7 @@ potentially risky commands require approval in the TUI. MCP connectivity is a
 later step. See [TODO.md](./TODO.md) for planned improvements.
 
 OpenAI Codex sign-in uses a browser OAuth flow and stores tokens in
-`~/.config/gmkres/auth.json` with restrictive file permissions. This is a
+`~/.config/maekress/auth.json` with restrictive file permissions. This is a
 third-party harness integration against the Codex client transport, not a
 published API contract, so it may change or stop working. Save OpenRouter API
 keys with `/login openrouter_api_key`; optionally set `OPENROUTER_MODEL`.
@@ -26,7 +26,17 @@ The Codex transport advertises client version `0.156.1` by default so newer
 catalog models are discoverable; override it with `CODEX_CLIENT_VERSION` if
 needed.
 The selected provider and per-provider model are saved in
-`~/.config/gmkres/config.json`.
+`~/.config/maekress/config.json`.
+
+## Agent guidance and skills
+
+User-wide guidance and skills live in `~/.config/maekress/agents.md` and
+`~/.config/maekress/skills/`. Project guidance and skills live in
+`.maekress/agents.md` and `.maekress/skills/`. A project may place
+`.maekress/agents.md` in subdirectories: when working on a file, apply each
+applicable instruction file from the project root through that file's directory,
+with the closest guidance taking precedence. The global guidance supplies
+defaults for every project.
 
 Project tools include file listing, chunked reading (using character `offset`
 and `limit`), and text search. Routine file creation, unified-diff patching,
@@ -55,7 +65,7 @@ Use `Ctrl+V` or `/paste-image` to attach an image from the **local host clipboar
 `Enter` (with or without text). Image bytes are saved in the private session
 JSON so retry and resume can send them again; this increases session file size.
 A vision-capable model is required. In tmux or over SSH, the clipboard read
-runs on the host running gmkres, not in the terminal client; terminal paste of
+runs on the host running maekress, not in the terminal client; terminal paste of
 an image by itself may not carry image bytes. Use the explicit shortcut or
 command when the image is in that host clipboard.
 The scrollback shows right-aligned user boxes, left-aligned assistant boxes, and
@@ -84,9 +94,9 @@ sending the message twice. Messages queued during a turn are sent in order when
 that turn ends, including after an interruption. Context-limit errors
 also suggest `/new`. No automatic compaction occurs. Input and scrollback messages
 wrap at word boundaries. Interruption cannot undo tool
-operations that have already completed. On exit, the TUI prints `resume with gmkres --resume <resume_id>`.
+operations that have already completed. On exit, the TUI prints `resume with maekress --resume <resume_id>`.
 Run that command from the same project directory to restore the chat and its selected
-provider/model. Sessions are saved under `~/.config/gmkres/sessions/` after
+provider/model. Sessions are saved under `~/.config/maekress/sessions/` after
 completed turns; an interrupted turn may need to be sent again. Draft text and
 previous terminal scrollback are not restored.
 Submitted messages remain in the terminal's scrollback, so tmux copy mode

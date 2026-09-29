@@ -11,7 +11,7 @@ function git(cwd: string, ...args: string[]): void {
 }
 
 test("Git footer shows cwd, clean state, branch, and counts files once", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "gmkres-status-"));
+  const cwd = await mkdtemp(join(tmpdir(), "maekress-status-"));
   try {
     git(cwd, "init", "-q", "-b", "my-long-branch-name");
     git(cwd, "config", "user.name", "Test");
@@ -42,6 +42,22 @@ test("main status shows model and context, defaulting to zero before usage arriv
   assert.equal(formatStatus({ ...state, contextUsed: 0, contextLimit: 1000 }), `${prefix}  ·  ctx: 0%`);
   assert.equal(formatStatus({ ...state, contextUsed: 100 }), prefix);
   assert.equal(formatStatus({ ...state, contextUsed: 100, contextLimit: 0 }), prefix);
+});
+
+test("status can spread to a requested full width", () => {
+  const state = { cwd: ".", provider: "Codex", model: "model", user: "me", contextUsed: 25, contextLimit: 100 };
+  const line = formatStatus(state, 60);
+  assert.equal(line.length, 60);
+  assert.ok(line.startsWith(`me@${hostname()}`));
+  assert.equal(line.slice(Math.floor((60 - "model | Codex".length) / 2), Math.floor((60 - "model | Codex".length) / 2) + "model | Codex".length), "model | Codex");
+  assert.ok(line.endsWith("ctx: 25%"));
+});
+
+test("status clips when the terminal is narrow", () => {
+  const state = { cwd: ".", provider: "Long Provider", model: "very-long-model", user: "me", contextUsed: 25, contextLimit: 100 };
+  const line = formatStatus(state, 24);
+  assert.equal(line.length, 24);
+  assert.ok(line.endsWith("…"));
 });
 
 test("context warning levels use observed request usage only", () => {

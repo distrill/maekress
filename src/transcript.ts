@@ -35,8 +35,8 @@ const defaultNames: DisplayNames = { user: "You", agent: "Agent" };
 
 export type ChatEntry = { role: "user" | "assistant" | "tool"; text: string; styled?: MarkdownBox };
 
-// Assistant border color matches the TUI's assistant transcript color.
-const assistantBorder = "#CBA6F7";
+// Borders stay neutral so role colors belong to text, not box geometry.
+const assistantBorder = "#E5E9F0";
 
 export function chatBox(role: "user" | "assistant", text: string, columns = 80, label?: string, names: DisplayNames = defaultNames): string {
   // Captured stdout is split at the terminal width by *character count* before

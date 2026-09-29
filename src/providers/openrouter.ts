@@ -49,7 +49,7 @@ export const openRouterProvider: ModelProvider = {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost",
-        "X-Title": "gmkres",
+        "X-Title": "maekress",
       },
       body: JSON.stringify({
         model,

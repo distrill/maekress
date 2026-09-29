@@ -1,3 +1,24 @@
+## features
+- [ ] subagents
+- [ ] todo lists
+- [ ] ask clarifying questions
+- [ ] worktrees babyyyy
+- [ ] diffs || expanded mode
+
+## papercuts
+- [ ] general "make it look good"
+- [ ] interactive scroll back, show hide thinking etc, expand something to full screen (for terminal multiline copy)
+- [ ] retry on error?
+- [ ] better git integration
+- [ ] log failures and improve them
+- [ ] we get stuck sometimes. why. what's going on
+- [ ] i want modes so that i can auto accept risky tool calls. probably except for _super_ risky ones
+
+## donezel
+- [x] mcp support
+- [x] web search
+- [x] it doesn't load models? i authed on a new computer and /model doesn't populate anything
+- [x] risky tool approval renders too low. sometimes it's cut off, and even when it's not it's too low. it should be above the input but it covers the input
 - [x] rm 12 tool limit
 - [x] auto execute commands, ask for confirmation only when they look _sketchy guy_
 - [x] linebreak on word
@@ -22,18 +43,7 @@
 - [x] /new should clear the chat history in the screen. right now it just prints a new session id
 - [x] model selection is weird. you shouldn't have to specify a provider, /model should show all model options, along with their providers, and selecting the model should also set the associated provider.
 - [x] timer showing how long worked
-
-- [ ] up arrow should move up inside of the current message input if there is a line above. only at the top should it move to the previous message
-- [ ] general "make it look good"
-- [ ] interactive scroll back, show hide thinking etc, expand something to full screen (for terminal multiline copy)
-- [ ] up to go through previous messages
-- [ ] worktrees babyyyy
-- [ ] retry on error?
-- [ ] better git integration
-- [ ] log failures and improve them
-- [ ] we get stuck sometimes. why. what's going on
-- [ ] it doesn't load models? i authed on a new computer and /model doesn't populate anything
-- [ ] risky tool approval renders too low. sometimes it's cut off, and even when it's not it's too low. it should be above the input but it covers the input
-- [ ] i want modes so that i can auto accept risky tool calls. probably except for _super_ risky ones
+- [x] up arrow should move up inside of the current message input if there is a line above. only at the top should it move to the previous message
+- [x] up to go through previous messages
 
 - [-] explore cmd palette

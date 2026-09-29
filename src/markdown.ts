@@ -20,7 +20,7 @@ const palette = {
   code: hex("#A6E3A1"),
   quote: hex("#F9E2AF"),
   link: hex("#89DCEB"),
-  plain: hex("#E5E9F0"),
+  plain: hex("#CBA6F7"),
 };
 
 const chunk = (text: string, fg = palette.plain, attrs = 0): TextChunk =>

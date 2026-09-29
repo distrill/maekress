@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { sep } from "node:path";
 import { promisify } from "node:util";
+import { take, width } from "./text-width.ts";
 
 const execFileAsync = promisify(execFile);
 const home = homedir();
@@ -47,9 +48,52 @@ export const statusModules: Record<string, StatusModule> = {
 // Git gets its own line so long paths and branches don't crowd out the main status.
 export const statusOrder = ["identity", "model", "context"];
 
-export function formatStatus(state: StatusState): string {
-  const main = statusOrder.map((id) => statusModules[id]?.(state)).filter(Boolean).join("  ·  ");
-  return state.git ? `${main}\n${statusModules.cwd(state)}  ·  ${statusModules.git(state)}` : main;
+function clipped(text: string, max: number): string {
+  if (max <= 0) return "";
+  if (width(text) <= max) return text;
+  const [prefix] = take(text, Math.max(0, max - 1));
+  return `${prefix}…`;
+}
+
+function alignStatus(left: string | undefined, center: string | undefined, right: string | undefined, columns?: number): string {
+  const parts = [left, center, right].filter((part): part is string => Boolean(part));
+  if (!parts.length) return "";
+  if (columns === undefined || columns <= 0) return parts.join("  ·  ");
+
+  const compact = parts.join(" · ");
+  if (width(compact) > columns) return clipped(compact, columns);
+
+  const row = Array.from({ length: columns }, () => " ");
+  const place = (text: string | undefined, start: number): boolean => {
+    if (!text) return true;
+    const textWidth = width(text);
+    if (start < 0 || start + textWidth > columns) return false;
+    for (let index = 0; index < textWidth; index++) if (row[start + index] !== " ") return false;
+    let offset = 0;
+    for (const char of text) row[start + offset++] = char;
+    return true;
+  };
+
+  const leftOk = place(left, 0);
+  const rightTextWidth = right ? width(right) : 0;
+  const rightOk = place(right, columns - rightTextWidth);
+  const centerTextWidth = center ? width(center) : 0;
+  const centerOk = place(center, Math.max(0, Math.floor((columns - centerTextWidth) / 2)));
+  return leftOk && centerOk && rightOk ? row.join("").trimEnd() : compact + " ".repeat(columns - width(compact));
+}
+
+function splitGit(git: string | undefined): [string | undefined, string | undefined] {
+  if (!git) return [undefined, undefined];
+  const separator = git.lastIndexOf("  ·  ");
+  return separator < 0 ? [git, undefined] : [git.slice(0, separator), git.slice(separator + 5)];
+}
+
+export function formatStatus(state: StatusState, columns?: number): string {
+  const main = alignStatus(statusModules.identity(state), statusModules.model(state), statusModules.context(state), columns);
+  const [gitSummary, gitBranch] = splitGit(statusModules.git(state));
+  const lines = [main];
+  if (state.git) lines.push(alignStatus(statusModules.cwd(state), gitSummary, gitBranch, columns));
+  return lines.join("\n");
 }
 
 export async function readGitStatus(cwd: string): Promise<string | undefined> {

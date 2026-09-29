@@ -22,7 +22,7 @@ export async function readClipboardImage(): Promise<ImageAttachment> {
     const result = await clipboard.read({ preferredTypes: [...supported] });
     if (result.status === "read") return imageAttachment(result.representation.mimeType, result.representation.bytes);
     if (result.status === "failed") throw result.error;
-    throw new Error(`No clipboard image available (${result.status}). Clipboard is read on the machine running gmkres.`);
+    throw new Error(`No clipboard image available (${result.status}). Clipboard is read on the machine running maekress.`);
   } finally {
     await clipboard.dispose();
   }

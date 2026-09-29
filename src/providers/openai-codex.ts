@@ -53,9 +53,9 @@ export const codexProvider: ModelProvider = {
       headers: {
         Authorization: `Bearer ${credential.accessToken}`,
         "ChatGPT-Account-ID": credential.accountId,
-        originator: "gmkres",
+        originator: "maekress",
         version: clientVersion,
-        "User-Agent": `gmkres/${clientVersion}`,
+        "User-Agent": `maekress/${clientVersion}`,
       },
     });
     if (!response.ok) throw await providerError(response);
@@ -78,9 +78,9 @@ export const codexProvider: ModelProvider = {
         "ChatGPT-Account-ID": credential.accountId,
         "Content-Type": "application/json",
         Accept: "text/event-stream",
-        originator: "gmkres",
+        originator: "maekress",
         version: clientVersion,
-        "User-Agent": `gmkres/${clientVersion}`,
+        "User-Agent": `maekress/${clientVersion}`,
       },
       body: JSON.stringify({
         model,

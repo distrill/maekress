@@ -2,13 +2,19 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-const configDirectory = path.join(homedir(), ".config", "gmkres");
+const configDirectory = path.join(homedir(), ".config", "maekress");
 const configPath = path.join(configDirectory, "config.json");
+
+export type McpServerPreference = {
+  url: string;
+  scope?: string;
+};
 
 export type Preferences = {
   provider?: string;
   models?: Record<string, string>;
   names?: { user?: string; agent?: string };
+  mcpServers?: Record<string, McpServerPreference>;
 };
 
 export async function loadPreferences(): Promise<Preferences> {
