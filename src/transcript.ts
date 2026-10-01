@@ -37,7 +37,7 @@ export type ChatEntry = { role: "user" | "assistant" | "tool"; text: string; sty
 export type ToolInspectRecord = { id: string; title: string; content: string };
 
 // Borders stay neutral so role colors belong to text, not box geometry.
-const assistantBorder = "#E5E9F0";
+const assistantBorder = "#E0DEF4";
 
 export function chatBox(role: "user" | "assistant", text: string, columns = 80, label?: string, names: DisplayNames = defaultNames): string {
   // Captured stdout is split at the terminal width by *character count* before

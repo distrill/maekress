@@ -31,13 +31,14 @@ type Completion = { insert: string; label: string };
 const displayNames: DisplayNames = { user: userInfo().username, agent: "Agent" };
 
 const columns = () => process.stdout.columns || 80;
-const transcriptColors = { user: "#8BD5CA", assistant: "#CBA6F7", tool: "#A6ADC8" } as const;
-const transcriptBorder = "#E5E9F0";
-const diffColors = { added: "#A6E3A1", removed: "#F38BA8", header: "#89DCEB", meta: "#E5E9F0", dim: "#747C91" } as const;
+const transcriptColors = { user: "#9CCFD8", assistant: "#C4A7E7", tool: "#908CAA" } as const;
+const transcriptBorder = "#E0DEF4";
+const diffColors = { added: "#31748F", removed: "#EB6F92", header: "#9CCFD8", meta: "#E0DEF4", dim: "#6E6A86" } as const;
 type InspectRecord = ToolInspectRecord & { createdAt: number };
 const boldAttribute = createTextAttributes({ bold: true });
 const dimAttribute = createTextAttributes({ dim: true });
-const queuedColor = "#747C91";
+const queuedColor = "#6E6A86";
+const statusColor = "#B9B4CC";
 // Keep the last scrollback row open. A trailing newline leaves an empty cursor
 // row between the last message and the activity line in split-footer mode.
 let scrollbackHasOpenRow = false;
@@ -162,7 +163,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       });
       lines.forEach((line, index) => root.add(new TextRenderable(renderContext, {
         // Box drawing stays neutral; only interior text carries the role color.
-        content: styledTranscriptLine(line), fg: line.includes("╭") || line.includes("╰") ? transcriptBorder : color ?? "#E5E9F0", position: "absolute", top: index,
+        content: styledTranscriptLine(line), fg: line.includes("╭") || line.includes("╰") ? transcriptBorder : color ?? "#E0DEF4", position: "absolute", top: index,
         width: Math.max(1, width), height: 1, wrapMode: "none",
       })));
       return { root, height: lines.length, rowColumns: width,
@@ -277,12 +278,12 @@ export async function startTui(resumed?: Session): Promise<void> {
         id: `queued-message-${index}`, width: Math.max(1, inputWidth() - 2),
         paddingX: 1, border: ["top", "left", "right"], borderStyle: "rounded",
         // The whole card fades to gray; selection and edit lift it slightly.
-        borderColor: queuedEditing === index ? "#CBA6F7" : selected ? "#A6ADC8" : "#747C91",
-        backgroundColor: "#181825", flexShrink: 0,
+        borderColor: queuedEditing === index ? "#C4A7E7" : selected ? "#908CAA" : "#6E6A86",
+        backgroundColor: "#1F1D2E", flexShrink: 0,
       });
       const label = queuedEditing === index ? `${imageLabel(message)} ▌` : imageLabel(message);
       const text = new TextRenderable(renderer, {
-        content: label, fg: selected ? "#E5E9F0" : "#A6ADC8", width: "100%", wrapMode: "word",
+        content: label, fg: selected ? "#E0DEF4" : "#908CAA", width: "100%", wrapMode: "word",
       });
       box.add(text);
       queuedView.add(box);
@@ -360,23 +361,23 @@ export async function startTui(resumed?: Session): Promise<void> {
     height: 4,
     border: true,
     borderStyle: "rounded",
-    borderColor: "#F9E2AF",
+    borderColor: "#F6C177",
     title: "Permission (y/n)",
-    titleColor: "#F9E2AF",
+    titleColor: "#F6C177",
     flexDirection: "column",
     overflow: "hidden",
     visible: false,
   });
   const approvalText = new TextRenderable(renderer, {
     content: "",
-    fg: "#E5E9F0",
+    fg: "#E0DEF4",
     width: "100%",
     height: 2,
     wrapMode: "word",
     flexShrink: 0,
   });
   const approvalHint = new TextRenderable(renderer, {
-    content: "(y/n) · Esc stop", fg: "#F9E2AF", width: "100%", height: 1,
+    content: "(y/n) · Esc stop", fg: "#F6C177", width: "100%", height: 1,
     flexShrink: 0,
   });
   approvalBox.add(approvalText);
@@ -401,7 +402,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   });
   const activityView = new TextRenderable(renderer, {
     content: "",
-    fg: "#E5E9F0",
+    fg: "#E0DEF4",
     width: "100%",
     height: 1,
     flexShrink: 0,
@@ -415,14 +416,14 @@ export async function startTui(resumed?: Session): Promise<void> {
 
   const status = new TextRenderable(renderer, {
     content: "",
-    fg: queuedColor,
+    fg: statusColor,
     height: 2,
     flexShrink: 0,
   });
 
   const completionView = new TextRenderable(renderer, {
     content: "",
-    fg: "#A6ADC8",
+    fg: "#908CAA",
     width: "100%",
     height: 0,
     wrapMode: "none",
@@ -671,7 +672,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     statusState.provider = getProvider(activeProvider).label;
     statusState.model = activeModel;
     status.content = formatStatus(statusState, Math.max(1, renderer.width - 2));
-    status.fg = contextWarning(statusState) >= 90 ? "#F38BA8" : contextWarning(statusState) >= 85 ? "#F9E2AF" : queuedColor;
+    status.fg = contextWarning(statusState) >= 90 ? "#EB6F92" : contextWarning(statusState) >= 85 ? "#F6C177" : statusColor;
     activityView.content = workingTimer
       ? `${frames[workingFrame++ % frames.length]} ${workingPhase} · Esc to stop${lastMessageAt === undefined ? "" : ` · ${elapsed(Date.now() - lastMessageAt)}`}`
       : "";
@@ -1003,8 +1004,8 @@ export async function startTui(resumed?: Session): Promise<void> {
     let selected = Math.max(0, browserRows().length - 1);
     let scroll = Math.max(0, selected - previousFrame + 5);
     const expanded = new Set<number>();
-    const box = new BoxRenderable(renderer, { id: "history-browser", width: "100%", height: "100%", position: "absolute", top: 0, left: 0, flexDirection: "column", paddingX: 1, border: true, borderStyle: "rounded", borderColor: "#89B4FA", title: " History · Ctrl+H ", titleColor: "#89B4FA", overflow: "hidden" });
-    const text = new TextRenderable(renderer, { content: "", width: "100%", height: "100%", wrapMode: "none", fg: "#E5E9F0" });
+    const box = new BoxRenderable(renderer, { id: "history-browser", width: "100%", height: "100%", position: "absolute", top: 0, left: 0, flexDirection: "column", paddingX: 1, border: true, borderStyle: "rounded", borderColor: "#31748F", title: " History · Ctrl+H ", titleColor: "#31748F", overflow: "hidden" });
+    const text = new TextRenderable(renderer, { content: "", width: "100%", height: "100%", wrapMode: "none", fg: "#E0DEF4" });
     box.add(text);
     const render = () => {
       const items = browserRows();
@@ -1077,14 +1078,14 @@ export async function startTui(resumed?: Session): Promise<void> {
     const hasMoreBelow = start + visible.length < completionChoices.length;
     const chunks: TextChunk[] = [];
     const addLine = (text: string, selected = false) => {
-      if (chunks.length) chunks.push({ __isChunk: true, text: "\n", fg: RGBA.fromHex("#A6ADC8") });
+      if (chunks.length) chunks.push({ __isChunk: true, text: "\n", fg: RGBA.fromHex("#908CAA") });
       const rowWidth = Math.max(1, renderer.width - 2);
       const padded = text + " ".repeat(Math.max(0, rowWidth - textWidth(text)));
       chunks.push({
         __isChunk: true,
         text: padded,
-        fg: RGBA.fromHex(selected ? "#11111B" : "#A6ADC8"),
-        ...(selected ? { bg: RGBA.fromHex("#CBA6F7"), attributes: boldAttribute } : {}),
+        fg: RGBA.fromHex(selected ? "#191724" : "#908CAA"),
+        ...(selected ? { bg: RGBA.fromHex("#C4A7E7"), attributes: boldAttribute } : {}),
       });
     };
     addLine(`${hasMoreAbove ? "↑ more above" : "Suggestions"} · ${completionChoices.length} matches`);
@@ -1595,11 +1596,11 @@ export async function startTui(resumed?: Session): Promise<void> {
     height: 1,
     wrapMode: "word",
     placeholder: "",
-    placeholderColor: "#747C91",
+    placeholderColor: "#6E6A86",
     backgroundColor: "transparent",
     focusedBackgroundColor: "transparent",
-    textColor: "#8BD5CA",
-    cursorColor: "#8BD5CA",
+    textColor: "#9CCFD8",
+    cursorColor: "#9CCFD8",
     onContentChange: () => {
       scheduleComposerResize();
       void updateCompletions(composer.plainText);

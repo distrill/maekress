@@ -16,11 +16,11 @@ const attributes = {
 
 const hex = (color: string) => RGBA.fromHex(color);
 const palette = {
-  heading: hex("#89B4FA"),
-  code: hex("#A6E3A1"),
-  quote: hex("#F9E2AF"),
-  link: hex("#89DCEB"),
-  plain: hex("#CBA6F7"),
+  heading: hex("#31748F"),
+  code: hex("#9CCFD8"),
+  quote: hex("#F6C177"),
+  link: hex("#9CCFD8"),
+  plain: hex("#C4A7E7"),
 };
 
 const chunk = (text: string, fg = palette.plain, attrs = 0): TextChunk =>
