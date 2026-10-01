@@ -67,7 +67,7 @@ export const codexProvider: ModelProvider = {
   },
   async stream({ model, messages, tools, signal, onText }) {
     const credential = await getCodexCredential();
-    if (!credential) throw new Error("Sign in first with /login codex.");
+    if (!credential) throw new Error("Connect OpenAI Codex with /provider add codex first.");
     const system = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
     const input = messages.filter((message) => message.role !== "system").flatMap(codexInputMessage);
     return withStreamIdleTimeout(signal, async (streamSignal, activity) => {

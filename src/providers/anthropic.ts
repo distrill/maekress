@@ -24,7 +24,7 @@ export const anthropicProvider: ModelProvider = {
   async listModels() { return [{ id: this.defaultModel, name: this.defaultModel }]; },
   async stream({ model, messages, tools, signal, onText }) {
     const apiKey = await getApiKey("anthropic") ?? process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("Sign in with /login anthropic_api_key before using Anthropic.");
+    if (!apiKey) throw new Error("Connect Anthropic with /provider add anthropic before using it.");
     const system = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
     return withStreamIdleTimeout(signal, async (streamSignal, activity) => {
       const response = await fetch("https://api.anthropic.com/v1/messages", {

@@ -41,7 +41,7 @@ export const openRouterProvider: ModelProvider = {
   },
   async stream({ model, messages, tools, signal, onText }) {
     const apiKey = await getApiKey("openrouter") ?? process.env.OPENROUTER_API_KEY;
-    if (!apiKey) throw new Error("Sign in with /login openrouter_api_key before using OpenRouter.");
+    if (!apiKey) throw new Error("Connect OpenRouter with /provider add openrouter before using it.");
     return withStreamIdleTimeout(signal, async (streamSignal, activity) => {
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",

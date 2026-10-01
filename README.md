@@ -23,7 +23,7 @@ OpenAI Codex sign-in uses a browser OAuth flow and stores tokens in
 `~/.config/maekress/auth.json` with restrictive file permissions. This is a
 third-party harness integration against the Codex client transport, not a
 published API contract, so it may change or stop working. Save OpenRouter API
-keys with `/login openrouter_api_key`; optionally set `OPENROUTER_MODEL`.
+keys with `/provider add openrouter`; optionally set `OPENROUTER_MODEL`.
 Set `CODEX_MODEL` to override the Codex default model.
 The Codex transport advertises client version `0.156.1` by default so newer
 catalog models are discoverable; override it with `CODEX_CLIENT_VERSION` if
@@ -94,7 +94,9 @@ provider/model; the old resume ID is printed. After a provider error or an
 interrupted request, the submitted message and completed tool rounds are saved;
 send another message to steer the continuation, or use `/retry` to continue without
 sending the message twice. Messages queued during a turn are sent in order when
-that turn ends, including after an interruption. Context-limit errors
+that turn ends, including after an interruption. While messages are queued, use
+`Ctrl+K` to select one, `Ctrl+L` to edit it, or `Ctrl+D` to remove it; `Esc` cancels
+an edit and keeps the message queued. Context-limit errors
 also suggest `/new`. No automatic compaction occurs. Input and scrollback messages
 wrap at word boundaries. Interruption cannot undo tool
 operations that have already completed. On exit, the TUI prints `resume with maekress --resume <resume_id>`.
@@ -105,7 +107,8 @@ previous terminal scrollback are not restored.
 Submitted messages remain in the terminal's scrollback, so tmux copy mode
 (`prefix` then `[`) can inspect earlier entries.
 
-Use `/login openai_codex` to sign in, `/provider codex` or `/provider openrouter` to
-switch providers, and `/model MODEL` to choose a model. OpenRouter keys are
-stored in the same private auth file as Codex credentials. `OPENROUTER_API_KEY`
-remains supported as an environment-variable fallback.
+Use `/provider add codex` to sign in or `/provider add openrouter` to save an API
+key; use `/provider rm <name>` to remove its saved credential. `/model MODEL`
+selects both a model and its provider. OpenRouter keys are stored in the same
+private auth file as Codex credentials. `OPENROUTER_API_KEY` remains supported as
+an environment-variable fallback.

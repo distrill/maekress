@@ -7,6 +7,8 @@ import {
 import {
   loginCodex,
   loginMcpOAuth,
+  removeApiKey,
+  removeCodexCredential,
   removeMcpOAuthCredential,
   saveApiKey,
 } from "./auth.ts";
@@ -1695,7 +1697,6 @@ export async function startTui(resumed?: Session): Promise<void> {
       "help",
       "history",
       "inspect",
-      "login",
       "mcp",
       "model",
       "name",
@@ -1728,19 +1729,6 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
     const command = input.slice(0, firstSpace);
     const query = input.slice(firstSpace + 1).trimStart();
-    if (command === "/login") {
-      const sources = ["openai_codex", "openrouter_api_key"];
-      return showCompletions(
-        matchChoices(
-          query,
-          sources.map((source) => ({
-            insert: `/login ${source}`,
-            label: source,
-          })),
-        ),
-        input,
-      );
-    }
     if (command === "/inspect") {
       return showCompletions(
         matchChoices(
@@ -1771,8 +1759,12 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
     if (command === "/provider") {
       const choices = [
-        { insert: "/provider codex", label: "codex · OpenAI Codex" },
-        { insert: "/provider openrouter", label: "openrouter · OpenRouter" },
+        { insert: "/provider add codex", label: "add codex · sign in with OpenAI" },
+        { insert: "/provider add openrouter", label: "add openrouter · save API key" },
+        { insert: "/provider add anthropic", label: "add anthropic · save API key" },
+        { insert: "/provider rm codex", label: "rm codex · remove OpenAI sign-in" },
+        { insert: "/provider rm openrouter", label: "rm openrouter · remove API key" },
+        { insert: "/provider rm anthropic", label: "rm anthropic · remove API key" },
       ];
       return showCompletions(matchChoices(query, choices), input);
     }
@@ -1888,7 +1880,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     );
   }
 
-  const retryableStatus = /\b(429|500|502|503|529)\b/;
+  const retryableProviderError = /\b(408|429|500|502|503|504|529)\b|fetch failed|network(?: error)?|connection (?:reset|refused)|stream stalled|timed? ?out/i;
   const maxRetries = 2;
   async function streamWithRetry(
     prov: ReturnType<typeof getProvider>,
@@ -1898,18 +1890,23 @@ export async function startTui(resumed?: Session): Promise<void> {
     onText: (chunk: string) => void,
   ) {
     for (let attempt = 0; ; attempt++) {
+      let receivedText = false;
       try {
         return await prov.stream({
           model,
           messages: msgs,
           tools: getToolDefinitions(),
           signal: controller.signal,
-          onText,
+          onText: (chunk) => {
+            receivedText = true;
+            onText(chunk);
+          },
         });
       } catch (error) {
         if (controller.signal.aborted) throw error;
         const msg = error instanceof Error ? error.message : String(error);
-        if (attempt < maxRetries && retryableStatus.test(msg)) {
+        // A retry after streamed text would append a second answer to the first.
+        if (!receivedText && attempt < maxRetries && retryableProviderError.test(msg)) {
           const delay = Math.min(2000 * 2 ** attempt, 8000);
           writeGlance(
             `Provider returned a transient error · retrying in ${delay / 1000}s (attempt ${attempt + 2}/${maxRetries + 1})`,
@@ -1952,8 +1949,68 @@ export async function startTui(resumed?: Session): Promise<void> {
       return;
     }
     if (input === "/help") {
-      writeGlance(
-        "Commands: /history · /inspect <id> · /new · /retry · /paste-image · /mcp add <name> <url> [scope] · /mcp rm <name> · /login · /provider · /model · /name · /help; Ctrl+H history · Ctrl+V image · Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit",
+      writeScrollback(
+        `MAEKRESS COMMANDS
+
+` +
+          `  /help                         Show this reference
+` +
+          `  /new                          Save this session and start fresh
+` +
+          `  /retry                        Continue after an interrupted or failed turn
+` +
+          `  /history                      Browse saved sessions
+` +
+          `  /inspect <id>                 Open saved tool or subagent output
+
+` +
+          `MODEL & ACCOUNT
+
+` +
+          `  /model [query]                Pick a model (also switches provider)
+` +
+          `  /provider add <name>           Connect codex, openrouter, or anthropic
+` +
+          `  /provider rm <name>            Remove saved provider credentials
+` +
+          `  /name <you|agent> <name>      Rename a chat participant
+
+` +
+          `TOOLS & INPUT
+
+` +
+          `  /mcp add <name> <url> [scope] Add an MCP server
+` +
+          `  /mcp rm <name>                Remove an MCP server
+` +
+          `  /paste-image                  Attach an image from the clipboard
+` +
+          `  /<skill>                      Run a project skill; Tab lists commands and skills
+
+` +
+          `KEYS
+
+` +
+          `  Enter       Send message              Ctrl+J      Insert newline
+` +
+          `  Esc         Stop turn / cancel edit   Ctrl+H      Browse history
+` +
+          `  Ctrl+V      Paste clipboard image     Ctrl+C      Quit
+
+` +
+          `QUEUE (while a turn is running)
+
+` +
+          `  Type and Enter  Queue a follow-up message
+` +
+          `  Ctrl+K          Select/cycle a queued message
+` +
+          `  Ctrl+L          Edit the selected message; Enter saves it
+` +
+          `  Ctrl+D          Remove the selected message
+` +
+          `  Esc             Cancel an edit and keep the original message`,
+        transcriptColors.tool,
       );
       return;
     }
@@ -2147,89 +2204,72 @@ export async function startTui(resumed?: Session): Promise<void> {
       );
       return;
     }
-    if (
-      input === "/login codex" ||
-      input === "/login openai-codex" ||
-      input === "/login openai_codex"
-    ) {
+    if (input === "/provider" || input === "/provider add") {
+      writeGlance("Usage: /provider add <codex|openrouter|anthropic> · /provider rm <codex|openrouter|anthropic>");
+      return;
+    }
+    if (input === "/provider add codex") {
       busy = true;
       composer.blur();
       setNotice("Waiting for OpenAI sign-in…");
       try {
         await loginCodex((url) => {
           writeScrollback(
-            glance(
-              `OpenAI sign-in URL (a browser should open): ${url}`,
-              columns(),
-            ),
+            glance(`OpenAI sign-in URL (a browser should open): ${url}`, columns()),
             transcriptColors.tool,
           );
         });
         setNotice("ready");
-        writeGlance("OpenAI Codex sign-in complete");
+        writeGlance("OpenAI Codex added");
       } catch (error) {
         setNotice("OpenAI sign-in failed");
-        writeGlance(
-          `OpenAI sign-in failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        writeGlance(`OpenAI sign-in failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         busy = false;
         composer.focus();
       }
       return;
     }
-    if (
-      input === "/login openrouter" ||
-      input === "/login openrouter_api_key"
-    ) {
+    if (input === "/provider add openrouter" || input === "/provider add anthropic") {
+      const name = input.slice("/provider add ".length);
+      const label = name === "openrouter" ? "OpenRouter" : "Anthropic";
       busy = true;
       composer.blur();
       renderer.suspend();
       let saved = false;
       try {
         const apiKey = await readSecret();
-        if (!apiKey) {
-          writeGlance("OpenRouter key entry cancelled or empty");
-        } else {
-          await saveApiKey("openrouter", apiKey);
+        if (!apiKey) writeGlance(`${label} key entry cancelled or empty`);
+        else {
+          await saveApiKey(name, apiKey);
           saved = true;
-          writeGlance("OpenRouter API key saved");
+          writeGlance(`${label} added`);
         }
       } catch (error) {
-        writeGlance(
-          `Could not save OpenRouter key: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        writeGlance(`Could not save ${label} key: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         renderer.resume();
-        setNotice(
-          saved
-            ? "OpenRouter key saved · /provider openrouter"
-            : "OpenRouter key not changed",
-        );
+        setNotice(saved ? `${label} added · choose a model with /model` : `${label} key not changed`);
         busy = false;
         composer.focus();
       }
       return;
     }
-    if (input.startsWith("/provider ")) {
-      const requested = input.slice("/provider ".length).trim().toLowerCase();
-      const id = requested === "codex" ? "openai-codex" : requested;
-      try {
-        const provider = getProvider(id);
-        applyModelSelection(
-          provider.id,
-          preferences.models?.[provider.id] ?? provider.defaultModel,
-        );
-        setNotice(
-          provider.id === "openrouter" && !(await provider.isConfigured())
-            ? "Use /login openrouter_api_key to connect OpenRouter"
-            : `${provider.label} selected`,
-        );
-        await persistSelection();
-      } catch {
-        // Not a provider id; maybe a model id, which also selects its provider.
-        await selectModel(input.slice("/provider ".length).trim());
+    if (input === "/provider rm" || input.startsWith("/provider rm ")) {
+      const name = input.slice("/provider rm".length).trim().toLowerCase();
+      if (!["codex", "openrouter", "anthropic"].includes(name)) {
+        writeGlance("Usage: /provider rm <codex|openrouter|anthropic>");
+        return;
       }
+      const label = name === "codex" ? "OpenAI Codex" : name === "openrouter" ? "OpenRouter" : "Anthropic";
+      const removed = name === "codex"
+        ? await removeCodexCredential()
+        : await removeApiKey(name);
+      writeGlance(removed ? `${label} removed` : `${label} was not configured`);
+      return;
+    }
+    if (input.startsWith("/provider ")) {
+      writeGlance("Providers are selected by model · use /model <query>");
       return;
     }
     if (input.startsWith("/model ")) {
@@ -2263,8 +2303,8 @@ export async function startTui(resumed?: Session): Promise<void> {
       if (!credentialError)
         setNotice(
           provider.id === "openrouter"
-            ? "Sign in with /login openrouter_api_key before using OpenRouter"
-            : "Sign in with /login codex before chatting",
+            ? "Connect OpenRouter with /provider add openrouter"
+            : "Connect OpenAI Codex with /provider add codex",
         );
       busy = false;
       renderStatus();
@@ -2738,21 +2778,17 @@ export async function startTui(resumed?: Session): Promise<void> {
       void pasteImage();
       return;
     }
-    if (queuedMessages.length && key.alt && key.name === "up") {
+    if (queuedMessages.length && key.ctrl && key.name === "k") {
       key.preventDefault();
       selectQueue();
       return;
     }
-    if (
-      queuedMessages.length &&
-      key.alt &&
-      (key.name === "down" || key.name === "return")
-    ) {
+    if (queuedMessages.length && key.ctrl && key.name === "l") {
       key.preventDefault();
       editQueued();
       return;
     }
-    if (queuedMessages.length && key.alt && key.name === "backspace") {
+    if (queuedMessages.length && key.ctrl && key.name === "d") {
       key.preventDefault();
       removeQueued();
       return;
@@ -2839,10 +2875,8 @@ export async function startTui(resumed?: Session): Promise<void> {
         return;
       }
       if (
-        (currentInput.startsWith("/provider ") &&
-          choice.insert.length > "/provider ".length) ||
-        (currentInput.startsWith("/login ") &&
-          choice.insert.length > "/login ".length)
+        currentInput.startsWith("/provider ") &&
+          choice.insert.length > "/provider ".length
       ) {
         key.preventDefault();
         const selected = choice.insert;
@@ -2907,7 +2941,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       if (activeProvider !== selectedProvider.id || statusClosed) return;
       if (!configured)
         setNotice(
-          `Not connected | /login ${selectedProvider.id === "openai-codex" ? "openai_codex" : "openrouter_api_key"}`,
+          `Not connected | /provider add ${selectedProvider.id === "openai-codex" ? "codex" : "openrouter"}`,
         );
     })
     .catch((error) => {

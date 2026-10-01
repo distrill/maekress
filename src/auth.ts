@@ -341,6 +341,14 @@ export async function getCodexCredential(): Promise<CodexCredential | undefined>
   return refreshed;
 }
 
+export async function removeCodexCredential(): Promise<boolean> {
+  const auth = await readAuthFile();
+  if (!auth.codex) return false;
+  delete auth.codex;
+  await saveAuthFile(auth);
+  return true;
+}
+
 export async function getMcpOAuthCredential(key: string): Promise<McpOAuthCredential | undefined> {
   const auth = await readAuthFile();
   const credential = auth.mcpOAuth?.[key];
@@ -381,4 +389,12 @@ export async function saveApiKey(source: string, apiKey: string): Promise<void> 
   auth.apiKeys ??= {};
   auth.apiKeys[source] = apiKey;
   await saveAuthFile(auth);
+}
+
+export async function removeApiKey(source: string): Promise<boolean> {
+  const auth = await readAuthFile();
+  if (!auth.apiKeys?.[source]) return false;
+  delete auth.apiKeys[source];
+  await saveAuthFile(auth);
+  return true;
 }

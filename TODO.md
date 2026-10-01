@@ -4,11 +4,9 @@
 - [ ] worktrees babyyyy
 
 ## papercuts
-- [ ] i should be able to edit queued messages
 - [ ] total time elapsed is the only thing you see, it writes next toolcall summary with the time _it_ took, but i want to know how long the current step has been working. right now leaving and checking in looks like it has hung for a long time when it hasn't
 - [ ] handle long pastes better?
 - [ ] how to copy
-- [ ] general "make it look good"
 - [ ] retry on error?
 - [ ] better git (stack) integration
 - [ ] log failures and improve them
@@ -17,6 +15,8 @@
 - [ ] provider failed doesn't seem to retry
 
 ## donezel
+- [x] general "make it look good"
+- [x] i should be able to edit queued messages
 - [x] subagents
 - [x] diffs || expanded mode
 - [x] we get stuck sometimes. why. what's going on (this hasn't happened in a while)
