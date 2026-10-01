@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { open, readdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -6,6 +6,7 @@ import path from "node:path";
 import { readSkill, resolveAgentContext } from "./agents.ts";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export type JsonSchema = {
   type: string;
@@ -32,7 +33,7 @@ export type ToolContext = {
 };
 
 const ignoredDirectories = new Set([".git", "node_modules", "dist", "build"]);
-const outputLimit = 12_000;
+const outputLimit = 32_000;
 const writeLimit = 1_000_000;
 
 // A conservative prompt for obvious hazards, not a shell sandbox.
@@ -251,7 +252,7 @@ async function collectFiles(directory: string, relative = ""): Promise<string[]>
     const childAbsolute = path.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await collectFiles(childAbsolute, childRelative));
     else if (entry.isFile()) files.push(childRelative);
-    if (files.length >= 500) return files.slice(0, 500);
+    if (files.length >= 2000) return files.slice(0, 2000);
   }
   return files;
 }
@@ -299,18 +300,20 @@ const builtinTools: HarnessTool[] = [
     async execute(input, context) {
       const target = await projectPath(context.projectRoot, typeof input.path === "string" ? input.path : ".");
       const entries = await collectFiles(target);
-      return entries.length ? entries.join("\n") : "No files found.";
+      if (!entries.length) return "No files found.";
+      const listing = entries.join("\n");
+      return entries.length >= 2000 ? `${listing}\n[truncated at 2000 files; use grep or a narrower path]` : listing;
     },
   },
   {
     name: "read_file",
-    description: "Read a UTF-8 text file inside the project. Large files can be read in chunks with offset and limit (character positions).",
+    description: "Read a UTF-8 text file inside the project. Returns numbered lines. Large files can be read in ranges with start_line and end_line (1-indexed, inclusive).",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "File path relative to the project root." },
-        offset: { type: "integer", description: "Character offset to start reading; defaults to 0." },
-        limit: { type: "integer", description: `Maximum characters to return; defaults to ${outputLimit}.` },
+        start_line: { type: "integer", description: "First line to return (1-indexed); defaults to 1." },
+        end_line: { type: "integer", description: "Last line to return (1-indexed, inclusive); defaults to start_line + 500." },
       },
       required: ["path"],
       additionalProperties: false,
@@ -319,50 +322,64 @@ const builtinTools: HarnessTool[] = [
       const target = await projectPath(context.projectRoot, stringInput(input, "path"));
       const fileStats = await stat(target);
       if (!fileStats.isFile()) throw new Error("Path is not a file.");
-      const offset = input.offset === undefined ? 0 : input.offset;
-      const limit = input.limit === undefined ? outputLimit : input.limit;
-      if (!Number.isSafeInteger(offset) || (offset as number) < 0) throw new Error("offset must be a nonnegative integer.");
-      if (!Number.isSafeInteger(limit) || (limit as number) < 1 || (limit as number) > outputLimit) throw new Error(`limit must be between 1 and ${outputLimit}.`);
       const contents = await readFile(target, "utf8");
-      const chunk = contents.slice(offset as number, (offset as number) + (limit as number));
-      return `${chunk}\n[characters ${offset}-${(offset as number) + chunk.length} of ${contents.length}]`;
+      const allLines = contents.split(/\r?\n/);
+      if (contents.endsWith("\n") && allLines.at(-1) === "") allLines.pop();
+      const totalLines = allLines.length;
+      const start = typeof input.start_line === "number" ? Math.max(1, Math.floor(input.start_line)) : 1;
+      const end = typeof input.end_line === "number" ? Math.min(totalLines, Math.floor(input.end_line)) : Math.min(totalLines, start + 499);
+      if (start > totalLines) return `[empty: file has ${totalLines} lines, requested start_line ${start}]`;
+      const numbered = allLines.slice(start - 1, end).map((line, i) => `${start + i}\t${line}`);
+      const output = numbered.join("\n");
+      const truncated = output.length > outputLimit ? `${output.slice(0, outputLimit)}\n[truncated at ${outputLimit} characters]` : output;
+      return `${truncated}\n[lines ${start}-${end} of ${totalLines}]`;
     },
   },
   {
-    name: "search_text",
-    description: "Search project text files for a literal, case-insensitive string.",
+    name: "grep",
+    description: "Search project files using ripgrep. Supports regex patterns, file type filtering, and word-boundary matching. Returns file:line:content matches.",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Text to search for." },
+        pattern: { type: "string", description: "Search pattern (regex by default; use --fixed-strings/-F for literal)." },
         path: { type: "string", description: "Directory to search, relative to the project root; defaults to the root." },
+        include: { type: "string", description: "Glob pattern for files to include, e.g. '*.ts' or '*.{ts,tsx}'." },
+        fixed_strings: { type: "boolean", description: "Treat the pattern as a literal string instead of regex." },
+        word: { type: "boolean", description: "Match whole words only." },
+        case_sensitive: { type: "boolean", description: "Force case-sensitive search (default: smart case)." },
       },
-      required: ["query"],
+      required: ["pattern"],
       additionalProperties: false,
     },
     async execute(input, context) {
-      const query = stringInput(input, "query").toLocaleLowerCase();
-      if (!query) throw new Error("Search query cannot be empty.");
-      const start = await projectPath(context.projectRoot, typeof input.path === "string" ? input.path : ".");
-      const files = await collectFiles(start);
-      const matches: string[] = [];
-      for (const relative of files) {
-        const target = path.join(start, relative);
-        try {
-          const fileStats = await stat(target);
-          if (fileStats.size > outputLimit) continue;
-          const contents = await readFile(target, "utf8");
-          contents.split(/\r?\n/).forEach((line, index) => {
-            if (line.toLocaleLowerCase().includes(query)) {
-              matches.push(`${path.relative(context.projectRoot, target)}:${index + 1}: ${line}`);
-            }
-          });
-        } catch {
-          continue;
-        }
-        if (matches.join("\n").length > outputLimit) break;
+      const pattern = stringInput(input, "pattern");
+      if (!pattern) throw new Error("Search pattern cannot be empty.");
+      const searchPath = await projectPath(context.projectRoot, typeof input.path === "string" ? input.path : ".");
+      const args = ["--no-heading", "--line-number", "--color=never", "--max-count=200"];
+      if (input.fixed_strings) args.push("--fixed-strings");
+      if (input.word) args.push("--word-regexp");
+      if (input.case_sensitive) args.push("--case-sensitive");
+      if (typeof input.include === "string") args.push("--glob", input.include);
+      args.push("--", pattern, searchPath);
+      context.signal?.throwIfAborted();
+      try {
+        const { stdout } = await execFileAsync("rg", args, {
+          cwd: context.projectRoot,
+          timeout: 30_000,
+          maxBuffer: outputLimit * 2,
+          signal: context.signal,
+        });
+        const output = stdout.trim();
+        if (!output) return "No matches found.";
+        const relative = output.split("\n").map((line) => {
+          if (line.startsWith(context.projectRoot)) return line.slice(context.projectRoot.length + 1);
+          return line;
+        }).join("\n");
+        return relative.slice(0, outputLimit);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && (error as { code: number }).code === 1) return "No matches found.";
+        throw error;
       }
-      return matches.length ? matches.join("\n").slice(0, outputLimit) : "No matches found.";
     },
   },
   {
@@ -568,11 +585,15 @@ const builtinTools: HarnessTool[] = [
       context.signal?.throwIfAborted();
       const { stdout, stderr } = await execAsync(command, {
         cwd: context.projectRoot,
-        timeout: 120_000,
-        maxBuffer: outputLimit * 2,
+        timeout: 300_000,
+        maxBuffer: outputLimit * 4,
         signal: context.signal,
       });
-      return [stdout, stderr && `stderr:\n${stderr}`].filter(Boolean).join("\n").slice(0, outputLimit) || "Command completed with no output.";
+      const combined = [stdout, stderr && `stderr:\n${stderr}`].filter(Boolean).join("\n");
+      if (!combined) return "Command completed with no output.";
+      if (combined.length <= outputLimit) return combined;
+      const tail = combined.slice(-outputLimit);
+      return `[output truncated; showing last ${outputLimit} characters]\n${tail}`;
     },
   },
 ];

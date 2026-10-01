@@ -30,7 +30,7 @@ export const anthropicProvider: ModelProvider = {
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify({ model, max_tokens: 8192, system, messages: messages.filter((message) => message.role !== "system").map(anthropicMessage), tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema })), stream: true }),
+        body: JSON.stringify({ model, max_tokens: 16384, system, messages: messages.filter((message) => message.role !== "system").map(anthropicMessage), tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema })), stream: true }),
         signal: streamSignal,
       });
       if (!response.ok) throw await providerError(response);
