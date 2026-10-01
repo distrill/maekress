@@ -37,7 +37,7 @@ export const statusModules: Record<string, StatusModule> = {
   identity: (state) => [state.user, hostname()].filter(Boolean).join("@"),
   cwd: (state) => displayCwd(state.cwd),
   git: (state) => state.git,
-  model: (state) => `${state.model} | ${state.provider}`,
+  model: (state) => state.model,
   // Before a provider reports usage, show zero; after that, use its observed input size.
   context: (state) => state.contextUsed === undefined
     ? "ctx: 0%"
@@ -89,10 +89,12 @@ function splitGit(git: string | undefined): [string | undefined, string | undefi
 }
 
 export function formatStatus(state: StatusState, columns?: number): string {
-  const main = alignStatus(statusModules.identity(state), statusModules.model(state), statusModules.context(state), columns);
+  const modelContext = [statusModules.model(state), statusModules.context(state)].filter(Boolean).join(" · ");
+  const main = alignStatus(statusModules.identity(state), undefined, modelContext, columns);
   const [gitSummary, gitBranch] = splitGit(statusModules.git(state));
+  const gitRight = [gitSummary, gitBranch].filter(Boolean).join(" · ");
   const lines = [main];
-  if (state.git) lines.push(alignStatus(statusModules.cwd(state), gitSummary, gitBranch, columns));
+  if (state.git) lines.push(alignStatus(statusModules.cwd(state), undefined, gitRight, columns));
   return lines.join("\n");
 }
 
@@ -119,7 +121,7 @@ export async function readGitStatus(cwd: string): Promise<string | undefined> {
       // In -z output, renames and copies have a second NUL-delimited path.
       if (xy.includes("R") || xy.includes("C")) i++;
     }
-    const symbols = { m: "'", d: "-", a: "+" };
+    const symbols = { m: "~", d: "-", a: "+" };
     const summary = (Object.entries(counts) as Array<[keyof typeof counts, number]>)
       .filter(([, count]) => count > 0).map(([kind, count]) => `${count}${symbols[kind]}`).join(" ");
     return `${summary || "✓ clean"}  ·  ${branch}`;

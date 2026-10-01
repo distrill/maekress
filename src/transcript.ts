@@ -4,7 +4,7 @@ import { width, take } from "./text-width.ts";
 import { markdownBox, type MarkdownBox } from "./markdown.ts";
 
 // Transcript output goes to the captured stdout scrollback, not the footer renderer.
-function clean(text: string): string {
+export function clean(text: string): string {
   return text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))|[\x00-\x08\x0b-\x1f\x7f]/g, "");
 }
 
@@ -34,6 +34,7 @@ export type DisplayNames = { user: string; agent: string };
 const defaultNames: DisplayNames = { user: "You", agent: "Agent" };
 
 export type ChatEntry = { role: "user" | "assistant" | "tool"; text: string; styled?: MarkdownBox };
+export type ToolInspectRecord = { id: string; title: string; content: string };
 
 // Borders stay neutral so role colors belong to text, not box geometry.
 const assistantBorder = "#E5E9F0";
@@ -66,14 +67,14 @@ export function elapsed(ms: number): string {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
 }
 
-export function toolGlance(call: ToolCall, result?: string, columns = 80, durationMs?: number): string {
+export function toolGlance(call: ToolCall, result?: string, columns = 80, durationMs?: number, ref?: string): string {
   let args: Record<string, unknown> = {};
   try { args = JSON.parse(call.arguments); } catch { /* Invalid arguments are reported by the tool result. */ }
   const payload = typeof args.content === "string" ? args.content : typeof args.patch === "string" ? args.patch :
     typeof args.newText === "string" ? args.newText : "";
   const count = payload ? ` · ${payload.split("\n").length} lines` : "";
   const error = result?.startsWith("Tool error:") ? " · failed" : "";
-  return glance(`${toolTarget(call)}${count}${error}${durationMs === undefined ? "" : ` · ${elapsed(durationMs)}`}`, columns);
+  return glance(`${ref ? `[${ref}] ` : ""}${toolTarget(call)}${count}${error}${durationMs === undefined ? "" : ` · ${elapsed(durationMs)}`}`, columns);
 }
 
 // Consecutive calls to the same tool/target share one scrollback line.
@@ -82,6 +83,7 @@ export class ToolGlanceBatch {
   private first: ToolCall | undefined;
   private key = "";
   private result = "";
+  private ref: string | undefined;
   private failures = 0;
   private total = 0;
   private durationMs: number | undefined;
@@ -91,14 +93,17 @@ export class ToolGlanceBatch {
   preview(columns = 80): string | undefined {
     if (!this.total) return undefined;
     return this.total === 1
-      ? toolGlance(this.first!, this.result, columns, this.durationMs)
-      : glance(`${this.key} ×${this.total}${this.failures ? ` (${this.failures} failed)` : ""}${this.durationMs === undefined ? "" : ` · ${elapsed(this.durationMs)}`}`, columns);
+      ? toolGlance(this.first!, this.result, columns, this.durationMs, this.ref)
+      : glance(`${this.ref ? `[${this.ref}] ` : ""}${this.key} ×${this.total}${this.failures ? ` (${this.failures} failed)` : ""}${this.durationMs === undefined ? "" : ` · ${elapsed(this.durationMs)}`}`, columns);
   }
 
-  add(call: ToolCall, result: string, columns = 80, durationMs?: number): string | undefined {
+  add(call: ToolCall, result: string, columns = 80, durationMs?: number, ref?: string): string | undefined {
     const key = toolTarget(call);
     const flushed = this.total && key !== this.key ? this.flush(columns) : undefined;
-    if (!this.total) this.first = call;
+    if (!this.total) {
+      this.first = call;
+      this.ref = ref;
+    }
     this.key = key;
     this.result = result;
     this.total++;
@@ -113,6 +118,7 @@ export class ToolGlanceBatch {
     this.first = undefined;
     this.key = "";
     this.result = "";
+    this.ref = undefined;
     this.durationMs = undefined;
     this.failures = this.total = 0;
     return text;
@@ -122,8 +128,12 @@ export class ToolGlanceBatch {
 export function toolTarget(call: ToolCall): string {
   let args: Record<string, unknown> = {};
   try { args = JSON.parse(call.arguments); } catch { /* Invalid arguments still get a summary. */ }
-  const target = typeof args.path === "string" ? args.path : typeof args.query === "string" ? `“${args.query}”` :
-    typeof args.command === "string" ? args.command : "";
+  const shorten = (value: string, max = 48) => short(value, max);
+  const query = typeof args.query === "string" ? args.query : typeof args.text === "string" ? args.text : undefined;
+  const target = typeof args.path === "string"
+    ? query ? `${args.path} “${shorten(query, 32)}”` : args.path
+    : query ? `“${shorten(query, 48)}”`
+      : typeof args.command === "string" ? args.command : "";
   return `${call.name}${target ? `: ${target}` : ""}`;
 }
 
@@ -134,12 +144,31 @@ export function glance(text: string, columns = 80): string {
   return `${prefix}${short(text, Math.max(0, columns - 1 - prefix.length))}\n`;
 }
 
-export function historyEntries(messages: ModelMessage[], columns = 80, names: DisplayNames = defaultNames): ChatEntry[] {
+export function historyEntries(messages: ModelMessage[], columns = 80, names: DisplayNames = defaultNames, inspectRecords?: Map<string, ToolInspectRecord>): ChatEntry[] {
   const entries: ChatEntry[] = [];
   const batch = new ToolGlanceBatch();
+  let nextInspectId = inspectRecords ? inspectRecords.size + 1 : 1;
+  let activeInspectKey: string | undefined;
+  let activeInspectId: string | undefined;
   const flush = () => {
     const text = batch.flush(columns);
     if (text) entries.push({ role: "tool", text });
+    activeInspectKey = undefined;
+    activeInspectId = undefined;
+  };
+  const inspectIdFor = (call: ToolCall, content: string): string | undefined => {
+    if (!inspectRecords) return undefined;
+    const title = toolTarget(call);
+    if (activeInspectKey === title && activeInspectId) {
+      const record = inspectRecords.get(activeInspectId);
+      if (record) record.content += `\n\n${content}`;
+      return activeInspectId;
+    }
+    const id = String(nextInspectId++).padStart(3, "0");
+    inspectRecords.set(id, { id, title, content });
+    activeInspectKey = title;
+    activeInspectId = id;
+    return id;
   };
   for (const message of messages) {
     if (message.role === "user") {
@@ -154,7 +183,7 @@ export function historyEntries(messages: ModelMessage[], columns = 80, names: Di
       for (const call of message.toolCalls ?? []) {
         const result = messages.find((item) => item.role === "tool" && item.toolCallId === call.id);
         if (!result) continue;
-        const text = batch.add(call, result.content, columns);
+        const text = batch.add(call, result.content, columns, undefined, inspectIdFor(call, result.content));
         if (text) entries.push({ role: "tool", text });
       }
     }

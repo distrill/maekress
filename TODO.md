@@ -3,18 +3,24 @@
 - [ ] todo lists
 - [ ] ask clarifying questions
 - [ ] worktrees babyyyy
-- [ ] diffs || expanded mode
 
 ## papercuts
+- [ ] handle long pastes better?
+- [ ] how to copy
 - [ ] general "make it look good"
-- [ ] interactive scroll back, show hide thinking etc, expand something to full screen (for terminal multiline copy)
 - [ ] retry on error?
-- [ ] better git integration
+- [ ] better git (stack) integration
 - [ ] log failures and improve them
-- [ ] we get stuck sometimes. why. what's going on
 - [ ] i want modes so that i can auto accept risky tool calls. probably except for _super_ risky ones
+- [ ] sometimes even when it's already at the bottom, the input moves up. must be that there were some lines above it that disappear. idk it's weird and gross and awkward
+- [ ] provider failed doesn't seem to retry
 
 ## donezel
+- [x] diffs || expanded mode
+- [x] we get stuck sometimes. why. what's going on (this hasn't happened in a while)
+- [x] interactive scroll back, show hide thinking etc, expand something to full screen (for terminal multiline copy)
+- [x] can we aggregate multiple edits to a file? some  things, like search_text, can't be aggregated here. but edit_file probably can be
+- [x] do we want to support previous messages in resume?
 - [x] mcp support
 - [x] web search
 - [x] it doesn't load models? i authed on a new computer and /model doesn't populate anything

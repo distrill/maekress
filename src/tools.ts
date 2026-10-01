@@ -146,6 +146,77 @@ function applyUnifiedPatch(contents: string, patch: string): string {
   return hadFinalNewline ? `${result}${newline}` : result;
 }
 
+const ansi = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  cyan: "\x1b[36m",
+};
+
+function linesForDiff(contents: string): string[] {
+  if (!contents) return [];
+  const lines = contents.split(/\r?\n/);
+  if (contents.endsWith("\n")) lines.pop();
+  return lines;
+}
+
+function formatCount(count: number, color: string, sign: string): string {
+  return count ? `${color}${sign}${count}${ansi.reset}` : `${ansi.dim}${sign}0${ansi.reset}`;
+}
+
+function hunkRange(start: number, count: number): string {
+  if (count === 0) return `${start},0`;
+  return count === 1 ? `${start}` : `${start},${count}`;
+}
+
+function prettyDiff(relativePath: string, before: string, after: string): string {
+  if (before === after) return "";
+
+  const oldLines = linesForDiff(before);
+  const newLines = linesForDiff(after);
+  let prefix = 0;
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1;
+
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix
+    && suffix < newLines.length - prefix
+    && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) suffix += 1;
+
+  const context = 3;
+  const oldChangeEnd = oldLines.length - suffix;
+  const newChangeEnd = newLines.length - suffix;
+  const oldContextStart = Math.max(0, prefix - context);
+  const oldContextEnd = Math.min(oldLines.length, oldChangeEnd + context);
+
+  const beforeContext = oldLines.slice(oldContextStart, prefix);
+  const removed = oldLines.slice(prefix, oldChangeEnd);
+  const added = newLines.slice(prefix, newChangeEnd);
+  const afterContext = oldLines.slice(oldChangeEnd, oldContextEnd);
+
+  const oldCount = beforeContext.length + removed.length + afterContext.length;
+  const newCount = beforeContext.length + added.length + afterContext.length;
+  const oldStart = oldCount === 0 ? 0 : oldContextStart + 1;
+  const newStart = newCount === 0 ? 0 : oldContextStart + 1;
+
+  const output = [
+    `${ansi.bold}✦ ${relativePath}${ansi.reset} · ${formatCount(added.length, ansi.green, "+")} ${formatCount(removed.length, ansi.red, "-")}`,
+    `${ansi.dim}${"─".repeat(Math.min(80, Math.max(24, relativePath.length + 16)))}${ansi.reset}`,
+    `${ansi.cyan}@@ -${hunkRange(oldStart, oldCount)} +${hunkRange(newStart, newCount)} @@${ansi.reset}`,
+    ...beforeContext.map((line) => `${ansi.dim}  ${line}${ansi.reset}`),
+    ...removed.map((line) => `${ansi.red}- ${line}${ansi.reset}`),
+    ...added.map((line) => `${ansi.green}+ ${line}${ansi.reset}`),
+    ...afterContext.map((line) => `${ansi.dim}  ${line}${ansi.reset}`),
+  ];
+
+  const formatted = output.join("\n");
+  if (formatted.length <= outputLimit) return formatted;
+  return `${formatted.slice(0, outputLimit - 80)}\n${ansi.dim}… diff truncated to ${outputLimit} characters${ansi.reset}`;
+}
+
 function stringInput(input: Record<string, unknown>, key: string): string {
   const value = input[key];
   if (typeof value !== "string") throw new Error(`Expected '${key}' to be a string.`);
@@ -328,7 +399,7 @@ const builtinTools: HarnessTool[] = [
       } finally {
         await handle.close();
       }
-      return `Created ${displayPath} (sha256 ${sha256(content)}).`;
+      return `Created ${displayPath} (sha256 ${sha256(content)}).\n\n${prettyDiff(displayPath, "", content)}`;
     },
   },
   {
@@ -356,13 +427,14 @@ const builtinTools: HarnessTool[] = [
       if (expectedHash !== undefined && expectedHash !== currentHash) throw new Error(`File changed since it was read (expected ${expectedHash}, found ${currentHash}).`);
       const updated = applyUnifiedPatch(original, patchText);
       if (Buffer.byteLength(updated, "utf8") > writeLimit) throw new Error(`Updated file exceeds ${writeLimit} bytes.`);
-      if (updated === original) return `No changes needed for ${path.relative(context.projectRoot, target)}.`;
-      if (!await confirmSensitivePath(context, path.relative(context.projectRoot, target), "Patch")) return "Patch declined by user.";
+      const displayPath = path.relative(context.projectRoot, target);
+      if (updated === original) return `No changes needed for ${displayPath}.`;
+      if (!await confirmSensitivePath(context, displayPath, "Patch")) return "Patch declined by user.";
       const latest = await readFile(target, "utf8");
       if (sha256(latest) !== currentHash) throw new Error("File changed while awaiting approval; patch was not applied.");
       const fileStats = await stat(target);
       await atomicReplace(target, updated, fileStats.mode & 0o777);
-      return `Updated ${path.relative(context.projectRoot, target)} (sha256 ${sha256(updated)}).`;
+      return `Updated ${displayPath} (sha256 ${sha256(updated)}).\n\n${prettyDiff(displayPath, original, updated)}`;
     },
   },
   {
@@ -389,11 +461,13 @@ const builtinTools: HarnessTool[] = [
       if (contents.indexOf(oldText, firstMatch + oldText.length) >= 0) {
         throw new Error("oldText matched more than once; provide a more specific match.");
       }
-      if (!await confirmSensitivePath(context, path.relative(context.projectRoot, target), "Edit")) return "Edit declined by user.";
+      const displayPath = path.relative(context.projectRoot, target);
+      if (!await confirmSensitivePath(context, displayPath, "Edit")) return "Edit declined by user.";
       if (await readFile(target, "utf8") !== contents) throw new Error("File changed while preparing edit; edit was not applied.");
+      const updated = contents.slice(0, firstMatch) + newText + contents.slice(firstMatch + oldText.length);
       const fileStats = await stat(target);
-      await atomicReplace(target, contents.slice(0, firstMatch) + newText + contents.slice(firstMatch + oldText.length), fileStats.mode & 0o777);
-      return `Updated ${path.relative(context.projectRoot, target)}.`;
+      await atomicReplace(target, updated, fileStats.mode & 0o777);
+      return `Updated ${displayPath}.\n\n${prettyDiff(displayPath, contents, updated)}`;
     },
   },
   {

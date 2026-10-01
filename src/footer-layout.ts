@@ -1,7 +1,7 @@
 // Keep the split footer inside the terminal, leaving a scrollback row when possible.
 // `editor` is the *desired* editor height; `editorRows` clamps it to the terminal so
 // callers can keep the split footer (which can grow beyond this layout) in bounds.
-export function footerLayout(rows: number, draftLines: number, suggestionLines: number, permissionLines: number, queuedLines = 0, pendingToolLines = 0, pendingUserLines = 0) {
+export function footerLayout(rows: number, draftLines: number, suggestionLines: number, permissionLines: number, queuedLines = 0, pendingToolLines = 0, pendingUserLines = 0, pendingInspectLines = 0) {
   const capacity = Math.max(1, rows - 1);
   // On tiny terminals, prioritize the composer and permission prompt over decoration.
   const inputBorder = Math.min(2, Math.max(0, capacity - 1));
@@ -23,11 +23,17 @@ export function footerLayout(rows: number, draftLines: number, suggestionLines: 
   const suggestions = Math.min(suggestionLines, remaining);
   remaining -= suggestions;
   const editor = Math.max(1, draftLines);
+  const editorAndInspect = remaining + 1;
+  const editorRows = Math.min(editor, editorAndInspect);
+  // Inspect previews are lowest priority: keep the composer responsive and let
+  // a growing draft consume these rows first. The full inspect record remains
+  // available in scrollback when replaced.
+  const pendingInspect = Math.min(pendingInspectLines, Math.max(0, editorAndInspect - editorRows));
   return {
-    permission, queued, pendingUser, pendingTool, status, activity, spacer, suggestions, editor,
+    permission, queued, pendingUser, pendingInspect, pendingTool, status, activity, spacer, suggestions, editor,
     inputBorder,
-    editorRows: Math.min(editor, remaining + 1),
-    height: permission + queued + pendingUser + pendingTool + status + activity + spacer + suggestions
-      + Math.min(editor, remaining + 1) + inputBorder,
+    editorRows,
+    height: permission + queued + pendingUser + pendingInspect + pendingTool + status + activity + spacer + suggestions
+      + editorRows + inputBorder,
   };
 }

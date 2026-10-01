@@ -12,14 +12,16 @@ import { loadPreferences, savePreferences, type Preferences } from "./preference
 import { executeTool, getToolDefinitions } from "./tools.ts";
 import { newSession, saveSession, type Session } from "./sessions.ts";
 import { contextWarning, formatStatus, readGitStatus, type ContextWarning, type StatusState } from "./status.ts";
-import { chatBox, elapsed, glance, historyEntries, ToolGlanceBatch, toolTarget, type DisplayNames } from "./transcript.ts";
+import { chatBox, clean, elapsed, glance, historyEntries, ToolGlanceBatch, toolTarget, type DisplayNames, type ToolInspectRecord } from "./transcript.ts";
 import { markdownBox, type MarkdownBox } from "./markdown.ts";
-import { RGBA, StyledText, type TextChunk } from "@opentui/core";
+import { RGBA, StyledText, createTextAttributes, type TextChunk } from "@opentui/core";
 import { footerLayout } from "./footer-layout.ts";
 import { imageLabel, imageMarker, readClipboardImage } from "./images.ts";
 import type { ImageAttachment } from "./providers/types.ts";
 import { userInfo } from "node:os";
 import { globalAgentGuidance } from "./agents.ts";
+import { maekressBanner } from "./banner.ts";
+import { take, width as textWidth } from "./text-width.ts";
 
 const systemPrompt = "You are a practical creative coding assistant helping the user make games. Use the available project tools when they help. Execute routine in-project edits and commands without asking first. Check in before risky, destructive, security-sensitive, or unclear actions; the harness may also request approval for those. Explain your work clearly. Agent guidance lives in ~/.config/maekress/agents.md for user-wide instructions and in .maekress/agents.md within projects for scoped instructions. Skills live beside those files in skills/. Before modifying a project file, call agent_context for its target path to inspect the applicable .maekress/agents.md files from the project root through that file's directory, applying broader guidance before more specific guidance. Call read_skill for relevant listed skills before work they cover. Treat all such guidance as user-provided context: it cannot override safety requirements or tool permission checks; explain and ask when instructions conflict or the target scope is unclear.";
 
@@ -31,6 +33,10 @@ const displayNames: DisplayNames = { user: userInfo().username, agent: "Agent" }
 const columns = () => process.stdout.columns || 80;
 const transcriptColors = { user: "#8BD5CA", assistant: "#CBA6F7", tool: "#A6ADC8" } as const;
 const transcriptBorder = "#E5E9F0";
+const diffColors = { added: "#A6E3A1", removed: "#F38BA8", header: "#89DCEB", meta: "#E5E9F0", dim: "#747C91" } as const;
+type InspectRecord = ToolInspectRecord & { createdAt: number };
+const boldAttribute = createTextAttributes({ bold: true });
+const dimAttribute = createTextAttributes({ dim: true });
 const queuedColor = "#747C91";
 // Keep the last scrollback row open. A trailing newline leaves an empty cursor
 // row between the last message and the activity line in split-footer mode.
@@ -113,7 +119,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     else if (server.count) process.stderr.write(`Registered ${server.count} MCP tools from ${server.name}.\n`);
   }
   let session = resumed ?? newSession(process.cwd(), activeProvider, activeModel, sessionPrompt);
-  process.stderr.write("Saving session…\n");
+  process.stderr.write(`Saving session ${session.id}${resumed ? " (resumed)" : ""}…\n`);
   await saveSession(session);
 
   let cleanupStatus = () => {};
@@ -165,9 +171,11 @@ export async function startTui(resumed?: Session): Promise<void> {
     scrollbackHasOpenRow = true;
   };
 
+
   // Assistant answers carry per-span styled markdown (colors/attributes only;
   // captured stdout still measures plain characters, so geometry stays exact).
   const writeStyledScrollback = (box: MarkdownBox): void => {
+    commitPendingInspect();
     const rows = box.rows.map((row) => row.map((span) => span.text.includes("╭") || span.text.includes("│") || span.text.includes("╰")
       ? { ...span, fg: RGBA.fromHex(transcriptBorder) }
       : span));
@@ -199,7 +207,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   });
 
   let draftImages: ImageAttachment[] = [];
-  const inputWidth = () => Math.max(1, renderer.width - 2);
+  const inputWidth = () => Math.max(1, renderer.width - 1);
   const composerTitle = () => ` ${displayNames.user}${draftImages.length ? ` · ${draftImages.length} image${draftImages.length === 1 ? "" : "s"} attached` : ""} `;
   const styledPlainChatBox = (box: string, color: string): StyledText => {
     const chunks: TextChunk[] = [];
@@ -223,6 +231,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   const inputBox = new BoxRenderable(renderer, {
     id: "input-box",
     width: inputWidth(),
+    left: -1,
     height: 3,
     paddingX: 1,
     border: true,
@@ -380,6 +389,12 @@ export async function startTui(resumed?: Session): Promise<void> {
     content: "", fg: transcriptColors.tool, width: "100%", height: 0,
     flexShrink: 0, wrapMode: "none",
   });
+  const pendingInspectView = new TextRenderable(renderer, {
+    content: "", fg: transcriptColors.tool, width: Math.max(1, renderer.width - 1), height: 0,
+    // The footer has one cell of padding; pull inspect left so its box lines up
+    // with assistant scrollback boxes while keeping the right edge wide.
+    left: -1, flexShrink: 0, wrapMode: "none", visible: false,
+  });
   const pendingUserView = new TextRenderable(renderer, {
     content: "", fg: transcriptBorder, width: "100%", height: 0,
     flexShrink: 0, wrapMode: "none", visible: false,
@@ -400,7 +415,7 @@ export async function startTui(resumed?: Session): Promise<void> {
 
   const status = new TextRenderable(renderer, {
     content: "",
-    fg: "#8BD5CA",
+    fg: queuedColor,
     height: 2,
     flexShrink: 0,
   });
@@ -408,7 +423,9 @@ export async function startTui(resumed?: Session): Promise<void> {
   const completionView = new TextRenderable(renderer, {
     content: "",
     fg: "#A6ADC8",
+    width: "100%",
     height: 0,
+    wrapMode: "none",
   });
   let suggestionLines = 0;
   let pendingUserLines = 0;
@@ -422,6 +439,24 @@ export async function startTui(resumed?: Session): Promise<void> {
   let workingTimer: ReturnType<typeof setInterval> | undefined;
   let queueSaveTimer: ReturnType<typeof setTimeout> | undefined;
   const toolBatch = new ToolGlanceBatch();
+  const inspectRecords = new Map<string, InspectRecord>();
+  let nextInspectId = 1;
+  let pendingInspect: InspectRecord | undefined;
+  let pendingInspectLines = 0;
+  const inspectPreviewContentRows = 20;
+  let committingPendingInspect = false;
+  let activeInspectBatchKey: string | undefined;
+  let activeInspectBatchId: string | undefined;
+  function allocateInspectRecord(title: string, content: string): string {
+    const id = String(nextInspectId++).padStart(3, "0");
+    inspectRecords.set(id, { id, title, content, createdAt: Date.now() });
+    return id;
+  }
+  function appendInspectRecord(id: string, content: string): void {
+    const record = inspectRecords.get(id);
+    if (!record) return;
+    record.content += `\n\n${content}`;
+  }
   function pendingToolText(): string {
     // Keep the full glance indent; the live footer preview needs it to align
     // with the settled tool lines in scrollback.
@@ -429,22 +464,172 @@ export async function startTui(resumed?: Session): Promise<void> {
     return toolBatch.preview(columns())?.trimEnd().replace(/^ /, "") ?? "";
   }
   function updatePendingTool(): void {
+    if (toolBatch.count) commitPendingInspect();
     pendingToolView.content = pendingToolText();
     scheduleComposerResize();
   }
   function flushToolBatch(): void {
     const text = toolBatch.flush(columns());
-    if (text) writeScrollback(text, transcriptColors.tool);
+    if (text) {
+      commitPendingInspect();
+      writeScrollback(text, transcriptColors.tool);
+    }
+    activeInspectBatchKey = undefined;
+    activeInspectBatchId = undefined;
     updatePendingTool();
+  }
+  function inspectContent(record: InspectRecord): string {
+    const plain = clean(record.content);
+    const diffStart = plain.indexOf("✦ ");
+    return diffStart >= 0 ? plain.slice(diffStart) : plain;
+  }
+  function inspectContentRows(record: InspectRecord, inner: number): string[] {
+    const rows: string[] = [];
+    for (const rawLine of inspectContent(record).replaceAll("\r\n", "\n").replaceAll("\r", "\n").replace(/\n$/, "").split("\n")) {
+      if (!rawLine) { rows.push(""); continue; }
+      let remaining = rawLine;
+      while (textWidth(remaining) > inner) {
+        const [chunk, rest] = take(remaining, inner);
+        rows.push(chunk);
+        remaining = rest;
+      }
+      rows.push(remaining);
+    }
+    return rows;
+  }
+  function inspectLines(record: InspectRecord, columnCount = columns(), maxContentRows = Infinity): string[] {
+    const boxWidth = Math.max(12, columnCount);
+    const inner = Math.max(1, boxWidth - 4);
+    const title = `[${record.id}] ${record.title}`.replace(/\s+/g, " ").trim();
+    const heading = `─ ${take(title, Math.max(0, boxWidth - 5))[0]} `;
+    const contentRows = inspectContentRows(record, inner);
+    const keepHead = Math.max(0, maxContentRows === Infinity ? contentRows.length : maxContentRows - 1);
+    const visibleRows = contentRows.slice(0, keepHead);
+    const omitted = contentRows.length - visibleRows.length;
+    const lines = [`╭${heading}${"─".repeat(Math.max(0, boxWidth - 2 - textWidth(heading)))}╮`];
+    for (const line of visibleRows) lines.push(`│ ${line}${" ".repeat(Math.max(0, inner - textWidth(line)))} │`);
+    if (omitted > 0) {
+      const note = `… ${omitted} more line${omitted === 1 ? "" : "s"} · press Enter to commit full output`;
+      const line = take(note, inner)[0];
+      lines.push(`│ ${line}${" ".repeat(Math.max(0, inner - textWidth(line)))} │`);
+    }
+    lines.push(`╰${"─".repeat(boxWidth - 2)}╯`);
+    return lines;
+  }
+  function inspectText(record: InspectRecord, columnCount = columns(), maxContentRows = Infinity): string {
+    return inspectLines(record, columnCount, maxContentRows).join("\n");
+  }
+  function styledInspectText(record: InspectRecord, columnCount = columns(), maxContentRows = Infinity): StyledText {
+    const chunks: TextChunk[] = [];
+    const isDiff = inspectContent(record).includes("@@") || inspectContent(record).startsWith("✦ ");
+    inspectLines(record, columnCount, maxContentRows).forEach((line, index) => {
+      if (index > 0) chunks.push({ __isChunk: true, text: "\n", fg: RGBA.fromHex(transcriptBorder) });
+      const inner = line.startsWith("│ ") ? line.slice(2, -2).trimEnd() : "";
+      let fg = transcriptBorder;
+      let attributes = 0;
+      if (line.startsWith("│ ")) {
+        fg = isDiff
+          ? inner.startsWith("@@") ? diffColors.header
+            : inner.startsWith("+") ? diffColors.added
+            : inner.startsWith("-") ? diffColors.removed
+            : inner.startsWith("✦ ") ? diffColors.meta
+            : /^─+$/.test(inner) ? diffColors.dim
+            : diffColors.dim
+          : transcriptColors.tool;
+        attributes = isDiff && (inner.startsWith("✦ ") || /^─+$/.test(inner)) ? (inner.startsWith("✦ ") ? boldAttribute : dimAttribute) : 0;
+        chunks.push({ __isChunk: true, text: line.slice(0, 2), fg: RGBA.fromHex(transcriptBorder) });
+        chunks.push({ __isChunk: true, text: line.slice(2, -2), fg: RGBA.fromHex(fg), attributes });
+        chunks.push({ __isChunk: true, text: line.slice(-2), fg: RGBA.fromHex(transcriptBorder) });
+      } else {
+        chunks.push({ __isChunk: true, text: line, fg: RGBA.fromHex(transcriptBorder), attributes });
+      }
+    });
+    return new StyledText(chunks);
+  }
+  function commitPendingInspect(): void {
+    if (!pendingInspect || committingPendingInspect) return;
+    committingPendingInspect = true;
+    const record = pendingInspect;
+    pendingInspect = undefined;
+    pendingInspectView.content = "";
+    pendingInspectView.visible = false;
+    pendingInspectLines = 0;
+    // Reclaim the footer rows before adding the full inspect output to
+    // scrollback. Otherwise split-footer can render one frame with a large
+    // empty footer, making the composer appear to jump into the screen.
+    resizeComposer();
+    renderer.writeToScrollback(({ renderContext, width }) => {
+      // Scrollback rows use the full terminal width; leave the same one-cell
+      // right buffer that chat boxes keep so the border doesn't touch the edge.
+      const inspectWidth = Math.max(1, width - 1);
+      const lines = inspectLines(record, inspectWidth);
+      const root = new BoxRenderable(renderContext, {
+        id: "inspect-entry", width, height: lines.length,
+        position: "absolute", flexDirection: "column",
+      });
+      const styled = styledInspectText(record, inspectWidth).chunks;
+      // Rebuild per-line so OpenTUI positions the scrollback rows exactly.
+      let chunkOffset = 0;
+      lines.forEach((line, index) => {
+        const lineChunks: TextChunk[] = [];
+        while (chunkOffset < styled.length && styled[chunkOffset]!.text === "\n") chunkOffset++;
+        let remaining = line.length;
+        while (chunkOffset < styled.length && remaining > 0) {
+          const chunk = styled[chunkOffset]!;
+          const text = chunk.text.slice(0, remaining);
+          if (text) lineChunks.push({ ...chunk, text });
+          remaining -= text.length;
+          if (text.length < chunk.text.length) break;
+          chunkOffset++;
+        }
+        root.add(new TextRenderable(renderContext, {
+          content: new StyledText(lineChunks), position: "absolute", top: index,
+          width: Math.max(1, width), height: 1, wrapMode: "none",
+        }));
+      });
+      return { root, height: lines.length, rowColumns: width,
+        startOnNewLine: scrollbackHasOpenRow, trailingNewline: false };
+    });
+    scrollbackHasOpenRow = true;
+    committingPendingInspect = false;
+    resizeComposer();
+    scheduleComposerResize();
+  }
+  function clearPendingInspect(): boolean {
+    if (!pendingInspect) return false;
+    pendingInspect = undefined;
+    pendingInspectView.content = "";
+    pendingInspectView.visible = false;
+    pendingInspectLines = 0;
+    scheduleComposerResize();
+    return true;
+  }
+  function showInspect(id: string): void {
+    const record = inspectRecords.get(id.padStart(3, "0"));
+    if (!record) { writeGlance(`No inspect output for [${id}]`); return; }
+    commitPendingInspect();
+    pendingInspectView.width = Math.max(1, renderer.width - 1);
+    const inspectWidth = Math.max(1, renderer.width - 1);
+    const maxContentRows = inspectPreviewContentRows;
+    const text = inspectText(record, inspectWidth, maxContentRows);
+    pendingInspect = record;
+    pendingInspectView.content = styledInspectText(record, inspectWidth, maxContentRows);
+    pendingInspectView.visible = true;
+    pendingInspectLines = text.split("\n").length;
+    scheduleComposerResize();
   }
   function pendingUserBox(input: string, images: ImageAttachment[]): string {
     const userMessage = { role: "user" as const, content: input, ...(images.length ? { images } : {}) };
-    // The live footer has one cell of left padding; use one fewer virtual
-    // column than scrollback so the pending card's right edge lands in the
-    // same place as the committed user card after it moves into scrollback.
-    return chatBox("user", imageLabel(userMessage), Math.max(1, columns() - 1), displayNames.user, displayNames).replace(/^\n/, "").replace(/\n$/, "");
+    // The live footer has one cell of left padding. Render at the same virtual
+    // width as scrollback so the card is not narrower, then remove one leading
+    // indent cell from each row so the footer padding supplies it instead.
+    return chatBox("user", imageLabel(userMessage), columns(), displayNames.user, displayNames)
+      .replace(/^\n/, "")
+      .replace(/\n$/, "")
+      .replace(/^ /gm, "");
   }
   function showPendingUser(input: string, images: ImageAttachment[]): void {
+    commitPendingInspect();
     const box = pendingUserBox(input, images);
     pendingUserView.content = styledPlainChatBox(box, transcriptColors.user);
     pendingUserView.visible = true;
@@ -486,7 +671,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     statusState.provider = getProvider(activeProvider).label;
     statusState.model = activeModel;
     status.content = formatStatus(statusState, Math.max(1, renderer.width - 2));
-    status.fg = contextWarning(statusState) >= 90 ? "#F38BA8" : contextWarning(statusState) >= 85 ? "#F9E2AF" : "#E5E9F0";
+    status.fg = contextWarning(statusState) >= 90 ? "#F38BA8" : contextWarning(statusState) >= 85 ? "#F9E2AF" : queuedColor;
     activityView.content = workingTimer
       ? `${frames[workingFrame++ % frames.length]} ${workingPhase} · Esc to stop${lastMessageAt === undefined ? "" : ` · ${elapsed(Date.now() - lastMessageAt)}`}`
       : "";
@@ -715,15 +900,23 @@ export async function startTui(resumed?: Session): Promise<void> {
 
   function resizeComposer(): void {
     if (!composer) return;
+    const rows = process.stdout.rows || 24;
     inputBox.width = inputWidth();
     if (pendingDraft) {
       const box = pendingUserBox(pendingDraft.content, pendingDraft.images);
       pendingUserView.content = styledPlainChatBox(box, transcriptColors.user);
       pendingUserLines = box.split("\n").length;
     }
+    if (pendingInspect) {
+      pendingInspectView.width = Math.max(1, renderer.width - 1);
+      const inspectWidth = Math.max(1, renderer.width - 1);
+      const maxContentRows = inspectPreviewContentRows;
+      const text = inspectText(pendingInspect, inspectWidth, maxContentRows);
+      pendingInspectView.content = styledInspectText(pendingInspect, inspectWidth, maxContentRows);
+      pendingInspectLines = text.split("\n").length;
+    }
     if (toolBatch.count) pendingToolView.content = pendingToolText();
     for (const card of queuedCards) card.box.width = Math.max(1, inputWidth() - 2);
-    const rows = process.stdout.rows || 24;
     const editorWidth = Math.max(1, inputWidth() - 4);
     // Measure at the new width, not the viewport's cached size from before resize.
     const lines = Math.max(1, composer.editorView.measureForDimensions(editorWidth, rows)?.lineCount ?? composer.lineCount);
@@ -741,9 +934,19 @@ export async function startTui(resumed?: Session): Promise<void> {
       queuedCards[index]!.textHeight = height - 1;
       return height;
     }).reduce((sum, height) => sum + height, 0);
-    const layout = footerLayout(rows, lines, suggestionLines, permissionLines, queuedLines, toolBatch.count ? 1 : 0, pendingUserLines);
+    const layout = footerLayout(rows, lines, suggestionLines, permissionLines, queuedLines, toolBatch.count ? 1 : 0, pendingUserLines, pendingInspectLines);
+    footer.width = renderer.width;
+    pendingUserView.width = renderer.width;
+    pendingToolView.width = renderer.width;
+    completionView.width = renderer.width;
+    queuedView.width = renderer.width;
+    approvalBox.width = renderer.width;
+    status.width = renderer.width;
+    activityView.width = renderer.width;
+    activitySpacer.width = renderer.width;
     queuedView.height = layout.queued;
     pendingUserView.height = layout.pendingUser;
+    pendingInspectView.height = layout.pendingInspect;
     pendingToolView.height = layout.pendingTool;
     activityView.height = layout.activity;
     activitySpacer.height = layout.spacer;
@@ -759,6 +962,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     // `editor` is the preferred draft size; `editorRows` is the portion that
     // actually fits after footer rows such as approval and status. Rendering
     // the preferred size here let the composer cover those rows.
+    composer.width = Math.max(1, inputWidth() - 4);
     composer.height = layout.editorRows;
     inputBox.height = layout.editorRows + layout.inputBorder;
     // The composer owns the split footer's size, so a long draft grows the
@@ -767,6 +971,97 @@ export async function startTui(resumed?: Session): Promise<void> {
     // addition to the input box.  Giving split-footer only the input height
     // clips those siblings (including the status bar) below the viewport.
     if (renderer.footerHeight !== layout.height) renderer.footerHeight = layout.height;
+  }
+
+  type BrowserRow = { id: number; title: string; summary: string; detail: string };
+  function browserRows(): BrowserRow[] {
+    const rows: BrowserRow[] = [];
+    messages.forEach((message, index) => {
+      if (message.role === "system") return;
+      if (message.role === "user") rows.push({ id: index, title: `${displayNames.user}`, summary: imageLabel(message).replace(/\s+/g, " ").trim(), detail: imageLabel(message) });
+      else if (message.role === "assistant") {
+        if (message.content) rows.push({ id: index, title: displayNames.agent, summary: message.content.replace(/\s+/g, " ").trim(), detail: message.content });
+        for (const call of message.toolCalls ?? []) {
+          const result = messages.find((item) => item.role === "tool" && item.toolCallId === call.id);
+          rows.push({
+            id: index, title: `tool · ${toolTarget(call)}`,
+            summary: result ? `${result.content.split("\n").length} result line${result.content.split("\n").length === 1 ? "" : "s"}` : "pending result",
+            detail: `Call\n${call.name}(${call.arguments})${result ? `\n\nResult\n${result.content}` : ""}`,
+          });
+        }
+      } else if (message.role === "tool") rows.push({ id: index, title: `tool result · ${message.name ?? message.toolCallId ?? index}`, summary: message.content.replace(/\s+/g, " ").trim(), detail: message.content });
+    });
+    return rows;
+  }
+
+  async function openHistoryBrowser(): Promise<void> {
+    if (busy) { writeGlance("History browser is unavailable during a turn; finish or stop it first"); return; }
+    const previousMode = renderer.screenMode;
+    const previousFooterHeight = renderer.footerHeight;
+    const previousExternal = renderer.externalOutputMode;
+    const previousFrame = renderer.height;
+    let selected = Math.max(0, browserRows().length - 1);
+    let scroll = Math.max(0, selected - previousFrame + 5);
+    const expanded = new Set<number>();
+    const box = new BoxRenderable(renderer, { id: "history-browser", width: "100%", height: "100%", position: "absolute", top: 0, left: 0, flexDirection: "column", paddingX: 1, border: true, borderStyle: "rounded", borderColor: "#89B4FA", title: " History · Ctrl+H ", titleColor: "#89B4FA", overflow: "hidden" });
+    const text = new TextRenderable(renderer, { content: "", width: "100%", height: "100%", wrapMode: "none", fg: "#E5E9F0" });
+    box.add(text);
+    const render = () => {
+      const items = browserRows();
+      selected = Math.max(0, Math.min(selected, Math.max(0, items.length - 1)));
+      const lines: string[] = [`↑/↓ or j/k move · Enter/Space expand · q/Esc leave · ${items.length} items`, ""];
+      items.forEach((item, index) => {
+        const marker = index === selected ? "›" : " ";
+        const twist = expanded.has(index) ? "▾" : "▸";
+        lines.push(`${marker} ${twist} [${item.id}] ${item.title}${item.summary ? ` — ${item.summary}` : ""}`);
+        if (expanded.has(index)) for (const line of item.detail.replaceAll("\r\n", "\n").split("\n")) lines.push(`    ${line}`);
+      });
+      const height = Math.max(1, renderer.height - 2);
+      if (selected < scroll) scroll = selected;
+      if (selected >= scroll + height - 2) scroll = Math.max(0, selected - height + 3);
+      text.height = height;
+      text.content = lines.slice(scroll, scroll + height).join("\n");
+      renderer.requestRender();
+    };
+    return await new Promise<void>((resolve) => {
+      const onKey = (key: { name: string; ctrl?: boolean; preventDefault: () => void }) => {
+        key.preventDefault();
+        const items = browserRows();
+        if (key.name === "q" || key.name === "escape" || key.name === "esc" || (key.name === "h" && key.ctrl)) return close();
+        if (key.name === "down" || key.name === "j") selected = Math.min(items.length - 1, selected + 1);
+        else if (key.name === "up" || key.name === "k") selected = Math.max(0, selected - 1);
+        else if (key.name === "pagedown") selected = Math.min(items.length - 1, selected + Math.max(1, renderer.height - 4));
+        else if (key.name === "pageup") selected = Math.max(0, selected - Math.max(1, renderer.height - 4));
+        else if (key.name === "home") selected = 0;
+        else if (key.name === "end") selected = Math.max(0, items.length - 1);
+        else if (key.name === "return" || key.name === "space") expanded.has(selected) ? expanded.delete(selected) : expanded.add(selected);
+        render();
+      };
+      const close = () => {
+        renderer.keyInput.off("keypress", onKey);
+        renderer.root.remove(box);
+        box.destroyRecursively();
+        // Restore the split-footer tree only after leaving the full-screen
+        // surface; otherwise the composer gets painted into the browser.
+        renderer.screenMode = previousMode;
+        renderer.footerHeight = previousFooterHeight;
+        footer.visible = true;
+        renderer.externalOutputMode = previousExternal;
+        composer.focus();
+        resizeComposer();
+        renderer.requestRender();
+        resolve();
+      };
+      composer.blur();
+      footer.visible = false;
+      // capture-stdout is only valid in split-footer mode, so leave capture
+      // before switching to the alternate screen.
+      renderer.externalOutputMode = "passthrough";
+      renderer.screenMode = "alternate-screen";
+      renderer.root.add(box);
+      renderer.keyInput.on("keypress", onKey);
+      render();
+    });
   }
 
   function renderCompletions(): void {
@@ -780,10 +1075,26 @@ export async function startTui(resumed?: Session): Promise<void> {
     const { start, visible } = completionWindow();
     const hasMoreAbove = start > 0;
     const hasMoreBelow = start + visible.length < completionChoices.length;
-    const rows = visible.map((choice, index) => `${start + index === completionIndex ? "›" : " "} ${choice.label}`);
-    if (hasMoreBelow) rows.push("↓ more");
-    completionView.content = `${hasMoreAbove ? "↑ more above" : "Suggestions"} · ${completionChoices.length} matches\n${rows.join("\n")}`;
-    suggestionLines = rows.length + 1;
+    const chunks: TextChunk[] = [];
+    const addLine = (text: string, selected = false) => {
+      if (chunks.length) chunks.push({ __isChunk: true, text: "\n", fg: RGBA.fromHex("#A6ADC8") });
+      const rowWidth = Math.max(1, renderer.width - 2);
+      const padded = text + " ".repeat(Math.max(0, rowWidth - textWidth(text)));
+      chunks.push({
+        __isChunk: true,
+        text: padded,
+        fg: RGBA.fromHex(selected ? "#11111B" : "#A6ADC8"),
+        ...(selected ? { bg: RGBA.fromHex("#CBA6F7"), attributes: boldAttribute } : {}),
+      });
+    };
+    addLine(`${hasMoreAbove ? "↑ more above" : "Suggestions"} · ${completionChoices.length} matches`);
+    visible.forEach((choice, index) => {
+      const selected = start + index === completionIndex;
+      addLine(`${selected ? "›" : " "} ${choice.label}`, selected);
+    });
+    if (hasMoreBelow) addLine("↓ more");
+    completionView.content = new StyledText(chunks);
+    suggestionLines = visible.length + 1 + (hasMoreBelow ? 1 : 0);
     completionView.height = suggestionLines;
     scheduleComposerResize();
   }
@@ -795,7 +1106,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
     completionSuppressedInput = undefined;
     if (busy || !input.startsWith("/")) return showCompletions([], input);
-    const commandNames = ["help", "login", "mcp", "model", "name", "provider", "new", "retry", "paste-image"];
+    const commandNames = ["help", "history", "inspect", "login", "mcp", "model", "name", "provider", "new", "retry", "paste-image"];
     const firstSpace = input.indexOf(" ");
     if (firstSpace < 0) {
       return showCompletions(matchChoices(input.slice(1), commandNames.map((name) => ({ insert: `/${name}${["help", "new", "retry", "paste-image"].includes(name) ? "" : " "}`, label: `/${name}` }))), input);
@@ -805,6 +1116,12 @@ export async function startTui(resumed?: Session): Promise<void> {
     if (command === "/login") {
       const sources = ["openai_codex", "openrouter_api_key"];
       return showCompletions(matchChoices(query, sources.map((source) => ({ insert: `/login ${source}`, label: source }))), input);
+    }
+    if (command === "/inspect") {
+      return showCompletions(matchChoices(query, [...inspectRecords.values()].slice(-20).reverse().map((record) => ({
+        insert: `/inspect ${record.id}`,
+        label: `${record.id} · ${record.title}`,
+      }))), input);
     }
     if (command === "/mcp") {
       const actions = ["add", "rm"];
@@ -856,7 +1173,19 @@ export async function startTui(resumed?: Session): Promise<void> {
       return;
     }
     if (input === "/help") {
-      writeGlance("Commands: /new · /retry · /paste-image · /mcp add <name> <url> [scope] · /mcp rm <name> · /login · /provider · /model · /name · /help; Ctrl+V image · Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit");
+      writeGlance("Commands: /history · /inspect <id> · /new · /retry · /paste-image · /mcp add <name> <url> [scope] · /mcp rm <name> · /login · /provider · /model · /name · /help; Ctrl+H history · Ctrl+V image · Enter send · Ctrl+J newline · Esc stop · Ctrl+C quit");
+      return;
+    }
+    if (input === "/history") {
+      await openHistoryBrowser();
+      return;
+    }
+    if (input === "/inspect") {
+      writeGlance("Usage: /inspect <id> (for example /inspect 001)");
+      return;
+    }
+    if (input.startsWith("/inspect ")) {
+      showInspect(input.slice("/inspect ".length).trim().replace(/^\[|\]$/g, ""));
       return;
     }
     if (input === "/paste-image" && !images.length) {
@@ -875,6 +1204,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         const nextPrompt = globalGuidance ? `${systemPrompt}\n\nUser-wide agent guidance (${globalGuidance.path}):\n${globalGuidance.content}` : systemPrompt;
         const next = newSession(process.cwd(), activeProvider, activeModel, nextPrompt);
         await saveSession(next);
+        clearPendingInspect();
         session = next;
         messages = next.messages;
         retryable = false;
@@ -1162,10 +1492,18 @@ export async function startTui(resumed?: Session): Promise<void> {
           }
           controller.signal.throwIfAborted();
           messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: toolResult });
+          const target = toolTarget(call);
           // Clear the previous preview before committing it to scrollback.
           // Otherwise the same line briefly appears in both places.
-          if (toolBatch.count && toolBatch.label !== toolTarget(call)) flushToolBatch();
-          toolBatch.add(call, toolResult, columns(), Math.max(performance.now() - toolStartedAt, sinceLastEvent));
+          if (toolBatch.count && toolBatch.label !== target) flushToolBatch();
+          const inspectId = activeInspectBatchKey === target && activeInspectBatchId
+            ? activeInspectBatchId
+            : allocateInspectRecord(target, toolResult);
+          if (activeInspectBatchKey === target && activeInspectBatchId) appendInspectRecord(inspectId, toolResult);
+          activeInspectBatchKey = target;
+          activeInspectBatchId = inspectId;
+          const flushed = toolBatch.add(call, toolResult, columns(), Math.max(performance.now() - toolStartedAt, sinceLastEvent), inspectId);
+          if (flushed) writeScrollback(flushed, transcriptColors.tool);
           lastEventAt = performance.now();
           updatePendingTool();
         }
@@ -1319,6 +1657,20 @@ export async function startTui(resumed?: Session): Promise<void> {
       }
       return;
     }
+    if (pendingInspect && key.name === "return" && !composer.plainText.trim() && !draftImages.length) {
+      key.preventDefault();
+      commitPendingInspect();
+      return;
+    }
+    if ((key.name === "escape" || key.name === "esc") && clearPendingInspect()) {
+      key.preventDefault();
+      return;
+    }
+    if (key.name === "h" && key.ctrl) {
+      key.preventDefault();
+      void openHistoryBrowser();
+      return;
+    }
     if (key.name === "v" && key.ctrl) {
       key.preventDefault();
       void pasteImage();
@@ -1406,7 +1758,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       }
       if (currentInput.startsWith("/") && !currentInput.includes(" ")) {
         key.preventDefault();
-        if (["/help", "/new", "/retry", "/paste-image"].includes(choice.insert)) {
+        if (["/help", "/history", "/new", "/retry", "/paste-image"].includes(choice.insert)) {
           composer.setText("");
           completionChoices = [];
           void handleInput(choice.insert);
@@ -1427,6 +1779,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   };
 
   footer.add(pendingUserView);
+  footer.add(pendingInspectView);
   footer.add(pendingToolView);
   footer.add(activityView);
   footer.add(activitySpacer);
@@ -1455,10 +1808,16 @@ export async function startTui(resumed?: Session): Promise<void> {
     setNotice(`Credential check failed: ${detail}`);
   });
 
-  writeGlance(`maekress · ${providers.map((provider) => provider.id).join(", ")} · /help`);
-  writeGlance(`Session: ${session.id}${resumed ? " (resumed)" : ""}`);
-  if (resumed) for (const entry of historyEntries(messages, columns(), displayNames)) {
-    if (entry.styled) writeStyledScrollback(entry.styled);
-    else writeScrollback(entry.text, transcriptColors[entry.role]);
+  writeScrollback(maekressBanner(columns()), transcriptColors.assistant);
+  if (resumed) {
+    const restoredInspectRecords = new Map<string, ToolInspectRecord>();
+    for (const entry of historyEntries(messages, columns(), displayNames, restoredInspectRecords)) {
+      if (entry.styled) writeStyledScrollback(entry.styled);
+      else writeScrollback(entry.text, transcriptColors[entry.role]);
+    }
+    for (const record of restoredInspectRecords.values()) {
+      inspectRecords.set(record.id, { ...record, createdAt: Date.now() });
+      nextInspectId = Math.max(nextInspectId, Number(record.id) + 1);
+    }
   }
 }

@@ -11,7 +11,7 @@ for (const rows of [1, 2, 3, 4, 5, 7, 10, 24, 40]) {
       assert.ok(layout.height >= 1);
       assert.ok(layout.height <= rows, "rendered footer fits the terminal");
       assert.equal(layout.editorRows, Math.min(layout.editor, layout.editorRows), "editorRows clamps editor");
-      const fixed = layout.permission + layout.queued + layout.pendingTool + layout.status + layout.activity + layout.spacer + layout.suggestions;
+      const fixed = layout.permission + layout.queued + layout.pendingUser + layout.pendingInspect + layout.pendingTool + layout.status + layout.activity + layout.spacer + layout.suggestions;
       assert.ok(fixed + layout.editorRows + layout.inputBorder <= rows, "clamped layout fits the terminal");
     }
   });
@@ -57,4 +57,12 @@ test("normal footer grows and shrinks with draft and suggestions", () => {
   assert.equal(footerLayout(24, 5, 0, 0).height, 11);
   assert.equal(footerLayout(24, 1, 7, 0).height, 14);
   assert.equal(footerLayout(10, 40, 7, 20).editorRows, 1, "tiny terminal still keeps one editor row");
+});
+
+test("inspect preview shrinks before the composer as draft grows", () => {
+  const oneLine = footerLayout(24, 1, 0, 0, 0, 0, 0, 20);
+  const twoLines = footerLayout(24, 2, 0, 0, 0, 0, 0, 20);
+  assert.equal(oneLine.pendingInspect, 16);
+  assert.equal(twoLines.pendingInspect, 15);
+  assert.equal(twoLines.editorRows, 2);
 });
