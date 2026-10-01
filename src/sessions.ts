@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { ImageAttachment, ModelMessage } from "./providers/types.ts";
+import { validTodos, type Todo } from "./todos.ts";
 
 const directory = path.join(homedir(), ".config", "maekress", "sessions");
 
@@ -17,6 +18,7 @@ export type Session = {
   model: string;
   messages: ModelMessage[];
   queue?: QueuedMessage[];
+  todos?: Todo[];
 };
 
 function validImages(images: unknown): images is ImageAttachment[] {
@@ -54,7 +56,8 @@ export async function loadSession(id: string): Promise<Session> {
       && ["system", "user", "assistant", "tool"].includes(message.role)
       && (message.images === undefined || (message.role === "user" && validImages(message.images))))
     || (session.queue !== undefined && !(Array.isArray(session.queue) && session.queue.every((entry) => entry
-      && typeof entry.content === "string" && (entry.images === undefined || validImages(entry.images)))))) {
+      && typeof entry.content === "string" && (entry.images === undefined || validImages(entry.images)))))
+    || (session.todos !== undefined && !validTodos(session.todos))) {
     throw new Error("Session file is invalid or unsupported.");
   }
   return session;

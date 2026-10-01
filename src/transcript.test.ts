@@ -37,6 +37,8 @@ test("tool details stay in one sanitized line, including failures", () => {
   assert.match(toolGlance(longCommand, "ok"), /^  · cmd: rg /);
   const delegate = { id: "3", name: "delegate", arguments: JSON.stringify({ task: "Inspect provider adapters." }) };
   assert.match(toolGlance(delegate, "ok"), /↳ subagent · Inspect provider adapters/);
+  const todos = { id: "4", name: "todo_write", arguments: JSON.stringify({ todos: [{ content: "inspect", status: "completed" }, { content: "implement", status: "in_progress" }] }) };
+  assert.match(toolGlance(todos, "ok"), /todos: 1\/2 completed/);
   for (const columns of [20, 40, 80, 120]) {
     for (const summary of [toolGlance(longCommand, "ok", columns), glance("Approval required · Run potentially risky command: " + JSON.parse(longCommand.arguments).command, columns)]) {
       assert.equal(summary, plain(summary), "captured stdout must not contain ANSI escape codes");
@@ -46,6 +48,20 @@ test("tool details stay in one sanitized line, including failures", () => {
   }
 });
 
+
+test("todo calls stay out of restored scrollback", () => {
+  const todo = {
+    id: "1",
+    name: "todo_write",
+    arguments: JSON.stringify({ todos: [{ content: "inspect", status: "in_progress" }] }),
+  };
+  const transcript = history([
+    { role: "assistant", content: "I'll inspect the code.", toolCalls: [todo] },
+    { role: "tool", toolCallId: "1", content: "[-] inspect" },
+  ]);
+  assert.match(transcript, /I'll inspect the code\./);
+  assert.doesNotMatch(transcript, /todos:|\[-\] inspect/);
+});
 
 test("tool durations sum across grouped calls and reset on flush", () => {
   const call = (id: string) => ({ id, name: "cmd", arguments: '{"command":"pwd"}' });

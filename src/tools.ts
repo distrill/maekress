@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { readSkill, resolveAgentContext } from "./agents.ts";
 import { configureSubagents, subagentTool } from "./subagents.ts";
+import { todoTools, type Todo } from "./todos.ts";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -15,6 +16,7 @@ export type JsonSchema = {
   properties?: Record<string, JsonSchema>;
   required?: string[];
   additionalProperties?: boolean;
+  items?: JsonSchema;
 };
 
 export type ToolDefinition = {
@@ -31,6 +33,7 @@ export type ToolContext = {
   projectRoot: string;
   confirm: (message: string) => Promise<boolean>;
   signal?: AbortSignal;
+  todos?: Todo[];
 };
 
 const ignoredDirectories = new Set([".git", "node_modules", "dist", "build"]);
@@ -599,7 +602,7 @@ const builtinTools: HarnessTool[] = [
   },
 ];
 
-const tools = new Map([...builtinTools, subagentTool].map((tool) => [tool.name, tool]));
+const tools = new Map([...builtinTools, ...todoTools, subagentTool].map((tool) => [tool.name, tool]));
 
 configureSubagents({
   provider: () => { throw new Error("Subagents have not been configured."); },

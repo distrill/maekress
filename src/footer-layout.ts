@@ -1,7 +1,7 @@
 // Keep the split footer inside the terminal, leaving a scrollback row when possible.
 // `editor` is the *desired* editor height; `editorRows` clamps it to the terminal so
 // callers can keep the split footer (which can grow beyond this layout) in bounds.
-export function footerLayout(rows: number, draftLines: number, suggestionLines: number, permissionLines: number, queuedLines = 0, pendingToolLines = 0, pendingUserLines = 0, pendingInspectLines = 0) {
+export function footerLayout(rows: number, draftLines: number, suggestionLines: number, permissionLines: number, queuedLines = 0, pendingToolLines = 0, pendingUserLines = 0, pendingInspectLines = 0, todoLines = 0) {
   const capacity = Math.max(1, rows - 1);
   // On tiny terminals, prioritize the composer and permission prompt over decoration.
   const inputBorder = Math.min(2, Math.max(0, capacity - 1));
@@ -10,6 +10,8 @@ export function footerLayout(rows: number, draftLines: number, suggestionLines: 
   remaining -= permission;
   const pendingUser = Math.min(pendingUserLines, remaining);
   remaining -= pendingUser;
+  const todos = Math.min(todoLines, remaining);
+  remaining -= todos;
   const pendingTool = Math.min(pendingToolLines, remaining);
   remaining -= pendingTool;
   const queued = Math.min(queuedLines, remaining);
@@ -30,10 +32,10 @@ export function footerLayout(rows: number, draftLines: number, suggestionLines: 
   // available in scrollback when replaced.
   const pendingInspect = Math.min(pendingInspectLines, Math.max(0, editorAndInspect - editorRows));
   return {
-    permission, queued, pendingUser, pendingInspect, pendingTool, status, activity, spacer, suggestions, editor,
+    permission, queued, pendingUser, pendingInspect, pendingTool, todos, status, activity, spacer, suggestions, editor,
     inputBorder,
     editorRows,
-    height: permission + queued + pendingUser + pendingInspect + pendingTool + status + activity + spacer + suggestions
+    height: permission + queued + pendingUser + pendingInspect + pendingTool + todos + status + activity + spacer + suggestions
       + editorRows + inputBorder,
   };
 }

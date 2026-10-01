@@ -143,6 +143,12 @@ export function toolTarget(call: ToolCall): string {
   try { args = JSON.parse(call.arguments); } catch { /* Invalid arguments still get a summary. */ }
   const shorten = (value: string, max = 48) => short(value, max);
   const query = typeof args.query === "string" ? args.query : typeof args.text === "string" ? args.text : undefined;
+  if (call.name === "todo_write") {
+    const todos = Array.isArray(args.todos) ? args.todos : [];
+    const completed = todos.filter((todo) => todo && typeof todo === "object" && (todo as { status?: unknown }).status === "completed").length;
+    return `todos: ${completed}/${todos.length} completed`;
+  }
+  if (call.name === "todo_list") return "todos";
   if (call.name === "delegate") {
     const task = typeof args.task === "string" ? shorten(args.task, 52) : "";
     return `↳ subagent${task ? ` · ${task}` : ""}`;
@@ -206,6 +212,10 @@ export function historyEntries(messages: ModelMessage[], columns = 80, names: Di
       for (const call of message.toolCalls ?? []) {
         const result = messages.find((item) => item.role === "tool" && item.toolCallId === call.id);
         if (!result) continue;
+        if (call.name.startsWith("todo_")) {
+          flush();
+          continue;
+        }
         if (call.name === "delegate") {
           flush();
           const id = inspectIdFor(call, result.content);

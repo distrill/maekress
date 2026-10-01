@@ -13,9 +13,10 @@ test("session checkpoint and resume preserve messages and selection", async () =
   assert.deepEqual(await loadSession(session.id), session);
 });
 
-test("queued messages persist across save and resume", async () => {
+test("queued messages and todos persist across save and resume", async () => {
   const session = newSession(process.cwd(), "openai-codex", "example-model", "instructions");
   session.queue = [{ content: "first" }, { content: "second", images: [{ mimeType: "image/png", data: "aGk=" }] }];
+  session.todos = [{ content: "implement todos", status: "in_progress" }];
   await saveSession(session);
   assert.deepEqual(await loadSession(session.id), session);
 });

@@ -26,6 +26,7 @@ import {
 } from "./preferences.ts";
 import { executeTool, getToolDefinitions } from "./tools.ts";
 import { newSession, saveSession, type Session } from "./sessions.ts";
+import { todoMarker, type Todo } from "./todos.ts";
 import {
   contextWarning,
   formatStatus,
@@ -70,6 +71,7 @@ Workflow:
 - Match existing style. Follow the conventions already in the codebase: naming, formatting, patterns. Don't introduce new abstractions, wrappers, or patterns unless the task calls for it.
 - Keep changes minimal. Do exactly what was asked. Don't refactor surrounding code, add speculative features, or "improve" things that weren't part of the request.
 - Delegate independent, bounded inspection, research, or analysis to the \`delegate\` tool whenever it does not need the full conversation. Give it a self-contained task and only the smallest relevant handoff context. Keep orchestration, user communication, edits, commands, and decisions that depend on the full task in this main conversation. Do not delegate trivial work or work that requires modifying files.
+- For multi-step work, maintain a concise progress list with \`todo_write\`, keeping one item in_progress and marking items completed as work finishes.
 
 Tool use:
 - Execute routine in-project edits and commands without asking first.
@@ -110,6 +112,8 @@ const diffColors = {
 type InspectRecord = ToolInspectRecord & { createdAt: number };
 const boldAttribute = createTextAttributes({ bold: true });
 const dimAttribute = createTextAttributes({ dim: true });
+const dimStrikeAttribute = createTextAttributes({ dim: true, strikethrough: true });
+const todoColor = "#EBBCBA";
 const queuedColor = "#6E6A86";
 const statusColor = "#B9B4CC";
 // Keep the last scrollback row open. A trailing newline leaves an empty cursor
@@ -212,7 +216,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   configureSubagents({
     provider: () => getProvider(activeProvider),
     model: () => activeModel,
-    tools: getToolDefinitions,
+    tools: () => getToolDefinitions().filter((tool) => !tool.name.startsWith("todo_")),
     executeTool,
   });
   const globalGuidance = await globalAgentGuidance();
@@ -428,6 +432,32 @@ export async function startTui(resumed?: Session): Promise<void> {
     title: composerTitle(),
     titleColor: transcriptBorder,
   });
+
+  const todosView = new TextRenderable(renderer, {
+    content: "",
+    width: "100%",
+    height: 0,
+    flexShrink: 0,
+    wrapMode: "none",
+  });
+  let todos: Todo[] = session.todos ?? (session.todos = []);
+  function renderTodos(): void {
+    const chunks: TextChunk[] = [];
+    todos.forEach((todo, index) => {
+      if (index > 0) {
+        chunks.push({ __isChunk: true, text: "\n", fg: RGBA.fromHex(todoColor) });
+      }
+      const completed = todo.status === "completed";
+      chunks.push({
+        __isChunk: true,
+        text: `${todoMarker(todo.status)} ${todo.content}`,
+        fg: RGBA.fromHex(completed ? "#6E6A86" : todoColor),
+        attributes: completed ? dimStrikeAttribute : 0,
+      });
+    });
+    todosView.content = new StyledText(chunks);
+    scheduleComposerResize();
+  }
 
   const queuedView = new BoxRenderable(renderer, {
     id: "queued-messages",
@@ -1417,6 +1447,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         return height;
       })
       .reduce((sum, height) => sum + height, 0);
+    const todoLines = todos.length;
     const layout = footerLayout(
       rows,
       lines,
@@ -1426,9 +1457,11 @@ export async function startTui(resumed?: Session): Promise<void> {
       toolBatch.count ? 1 : 0,
       pendingUserLines,
       pendingInspectLines,
+      todoLines,
     );
     footer.width = renderer.width;
     pendingUserView.width = renderer.width;
+    todosView.width = renderer.width;
     pendingToolView.width = renderer.width;
     completionView.width = renderer.width;
     queuedView.width = inputWidth();
@@ -1438,6 +1471,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     activitySpacer.width = renderer.width;
     queuedView.height = layout.queued;
     pendingUserView.height = layout.pendingUser;
+    todosView.height = layout.todos;
     pendingInspectView.height = layout.pendingInspect;
     pendingToolView.height = layout.pendingTool;
     activityView.height = layout.activity;
@@ -2057,6 +2091,8 @@ export async function startTui(resumed?: Session): Promise<void> {
         clearPendingInspect();
         session = next;
         messages = next.messages;
+        todos = next.todos ?? (next.todos = []);
+        renderTodos();
         retryable = false;
         toolBatch.flush(columns());
         updatePendingTool();
@@ -2423,6 +2459,7 @@ export async function startTui(resumed?: Session): Promise<void> {
                     projectRoot: process.cwd(),
                     confirm: confirmTool,
                     signal: controller.signal,
+                    todos,
                   },
                 );
               } catch (error) {
@@ -2431,6 +2468,7 @@ export async function startTui(resumed?: Session): Promise<void> {
             }),
           );
           controller.signal.throwIfAborted();
+          renderTodos();
           for (let i = 0; i < result.toolCalls.length; i++) {
             const call = result.toolCalls[i]!;
             const toolResult = results[i]!;
@@ -2440,6 +2478,10 @@ export async function startTui(resumed?: Session): Promise<void> {
               name: call.name,
               content: toolResult,
             });
+            if (call.name.startsWith("todo_")) {
+              flushToolBatch();
+              continue;
+            }
             const duration = Math.max(
               performance.now() - batchStart,
               sinceLastEvent,
@@ -2503,6 +2545,7 @@ export async function startTui(resumed?: Session): Promise<void> {
                   projectRoot: process.cwd(),
                   confirm: confirmTool,
                   signal: controller.signal,
+                  todos,
                 },
               );
             } catch (error) {
@@ -2512,12 +2555,19 @@ export async function startTui(resumed?: Session): Promise<void> {
               resizeComposer();
             }
             controller.signal.throwIfAborted();
+            renderTodos();
             messages.push({
               role: "tool",
               toolCallId: call.id,
               name: call.name,
               content: toolResult,
             });
+            if (call.name.startsWith("todo_")) {
+              flushToolBatch();
+              lastEventAt = performance.now();
+              updatePendingTool();
+              continue;
+            }
             const duration = Math.max(
               performance.now() - toolStartedAt,
               sinceLastEvent,
@@ -2920,6 +2970,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   footer.add(completionView);
   footer.add(approvalBox);
   footer.add(queuedView);
+  footer.add(todosView);
   inputBox.add(composer);
   footer.add(inputBox);
   footer.add(status);
@@ -2928,7 +2979,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   renderer.setFrameCallback(async () => {
     if (!statusClosed) resizeComposer();
   });
-  resizeComposer();
+  renderTodos();
   composer.focus();
   process.stderr.write("Terminal UI ready. Type a message or /help.\n");
 
