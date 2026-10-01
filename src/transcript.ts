@@ -33,7 +33,7 @@ function rows(text: string, max: number): string[] {
 export type DisplayNames = { user: string; agent: string };
 const defaultNames: DisplayNames = { user: "You", agent: "Agent" };
 
-export type ChatEntry = { role: "user" | "assistant" | "tool"; text: string; styled?: MarkdownBox };
+export type ChatEntry = { role: "user" | "assistant" | "tool" | "subagent"; text: string; styled?: MarkdownBox };
 export type ToolInspectRecord = { id: string; title: string; content: string };
 
 // Borders stay neutral so role colors belong to text, not box geometry.
@@ -65,6 +65,19 @@ function short(text: string, max = 52): string {
 export function elapsed(ms: number): string {
   const seconds = Math.floor(Math.max(0, ms) / 1000);
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+export function subagentGlance(call: ToolCall, columns = 80, durationMs?: number, ref?: string, result?: string): string {
+  let task = "";
+  try {
+    const args = JSON.parse(call.arguments) as Record<string, unknown>;
+    if (typeof args.task === "string") task = clean(args.task).replace(/\s+/g, " ").trim();
+  } catch { /* Invalid arguments are reported by the tool result. */ }
+  const report = result ? short(result, 28) : "report ready";
+  const prefix = `${ref ? `[${ref}] ` : ""}↳ subagent`;
+  const suffix = `${durationMs === undefined ? "" : ` · ${elapsed(durationMs)}`}`;
+  const available = Math.max(0, columns - 1 - 4 - width(prefix) - width(suffix) - width(report) - 6);
+  return glance(`${prefix}${task ? ` · ${short(task, Math.max(12, available))}` : ""} · ${report}${suffix}`, columns);
 }
 
 export function toolGlance(call: ToolCall, result?: string, columns = 80, durationMs?: number, ref?: string): string {
@@ -130,6 +143,10 @@ export function toolTarget(call: ToolCall): string {
   try { args = JSON.parse(call.arguments); } catch { /* Invalid arguments still get a summary. */ }
   const shorten = (value: string, max = 48) => short(value, max);
   const query = typeof args.query === "string" ? args.query : typeof args.text === "string" ? args.text : undefined;
+  if (call.name === "delegate") {
+    const task = typeof args.task === "string" ? shorten(args.task, 52) : "";
+    return `↳ subagent${task ? ` · ${task}` : ""}`;
+  }
   const target = typeof args.path === "string"
     ? query ? `${args.path} “${shorten(query, 32)}”` : args.path
     : query ? `“${shorten(query, 48)}”`
@@ -158,7 +175,13 @@ export function historyEntries(messages: ModelMessage[], columns = 80, names: Di
   };
   const inspectIdFor = (call: ToolCall, content: string): string | undefined => {
     if (!inspectRecords) return undefined;
-    const title = toolTarget(call);
+    let title = toolTarget(call);
+    if (call.name === "delegate") {
+      try {
+        const args = JSON.parse(call.arguments) as Record<string, unknown>;
+        if (typeof args.task === "string") title = `subagent · ${args.task.replace(/\s+/g, " ").trim()}`;
+      } catch { /* The tool result contains malformed argument errors. */ }
+    }
     if (activeInspectKey === title && activeInspectId) {
       const record = inspectRecords.get(activeInspectId);
       if (record) record.content += `\n\n${content}`;
@@ -183,6 +206,14 @@ export function historyEntries(messages: ModelMessage[], columns = 80, names: Di
       for (const call of message.toolCalls ?? []) {
         const result = messages.find((item) => item.role === "tool" && item.toolCallId === call.id);
         if (!result) continue;
+        if (call.name === "delegate") {
+          flush();
+          const id = inspectIdFor(call, result.content);
+          entries.push({ role: "subagent", text: subagentGlance(call, columns, undefined, id, result.content) });
+          activeInspectKey = undefined;
+          activeInspectId = undefined;
+          continue;
+        }
         const text = batch.add(call, result.content, columns, undefined, inspectIdFor(call, result.content));
         if (text) entries.push({ role: "tool", text });
       }

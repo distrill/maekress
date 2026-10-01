@@ -12,7 +12,10 @@ terminal scrollback while the composer stays live at the bottom. The current
 provider adapters stream text and function calls from OpenAI Codex and
 OpenRouter. The harness executes registered tools, returns results to the
 model, and repeats until the model responds normally, without a fixed tool-round
-limit. Routine shell commands and file edits run directly; sensitive paths and
+limit. The main agent can delegate bounded, independent inspection, research, and
+analysis to an isolated read-only subagent. A subagent receives only its task and
+an optional minimal handoff, has no access to the main transcript, cannot recurse,
+and returns a concise report; it cannot edit files or run commands. Routine shell commands and file edits run directly; sensitive paths and
 potentially risky commands require approval in the TUI. MCP connectivity is a
 later step. See [TODO.md](./TODO.md) for planned improvements.
 

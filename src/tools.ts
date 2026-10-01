@@ -4,6 +4,7 @@ import { open, readdir, readFile, realpath, rename, stat, unlink, writeFile } fr
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { readSkill, resolveAgentContext } from "./agents.ts";
+import { configureSubagents, subagentTool } from "./subagents.ts";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -598,7 +599,14 @@ const builtinTools: HarnessTool[] = [
   },
 ];
 
-const tools = new Map(builtinTools.map((tool) => [tool.name, tool]));
+const tools = new Map([...builtinTools, subagentTool].map((tool) => [tool.name, tool]));
+
+configureSubagents({
+  provider: () => { throw new Error("Subagents have not been configured."); },
+  model: () => "",
+  tools: getToolDefinitions,
+  executeTool,
+});
 
 export function registerTool(tool: HarnessTool): void {
   if (tools.has(tool.name)) throw new Error(`Tool already registered: ${tool.name}`);

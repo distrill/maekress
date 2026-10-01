@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { chatBox, elapsed, glance, history, historyEntries, toolGlance, ToolGlanceBatch } from "./transcript.ts";
+import { chatBox, elapsed, glance, history, historyEntries, subagentGlance, toolGlance, ToolGlanceBatch } from "./transcript.ts";
 
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -35,6 +35,8 @@ test("tool details stay in one sanitized line, including failures", () => {
   assert.equal(plain(glance("hello\n\x1b[31mworld")), "  · hello world\n");
   const longCommand = { id: "2", name: "cmd", arguments: JSON.stringify({ command: "rg 'class TextareaRenderable|class BoxRenderable|footerHeight' node_modules/@opentui/core/chunk-node-54dhb2fr.js" }) };
   assert.match(toolGlance(longCommand, "ok"), /^  · cmd: rg /);
+  const delegate = { id: "3", name: "delegate", arguments: JSON.stringify({ task: "Inspect provider adapters." }) };
+  assert.match(toolGlance(delegate, "ok"), /↳ subagent · Inspect provider adapters/);
   for (const columns of [20, 40, 80, 120]) {
     for (const summary of [toolGlance(longCommand, "ok", columns), glance("Approval required · Run potentially risky command: " + JSON.parse(longCommand.arguments).command, columns)]) {
       assert.equal(summary, plain(summary), "captured stdout must not contain ANSI escape codes");

@@ -1,10 +1,11 @@
 ## features
-- [ ] subagents
 - [ ] todo lists
 - [ ] ask clarifying questions
 - [ ] worktrees babyyyy
 
 ## papercuts
+- [ ] i should be able to edit queued messages
+- [ ] total time elapsed is the only thing you see, it writes next toolcall summary with the time _it_ took, but i want to know how long the current step has been working. right now leaving and checking in looks like it has hung for a long time when it hasn't
 - [ ] handle long pastes better?
 - [ ] how to copy
 - [ ] general "make it look good"
@@ -16,6 +17,7 @@
 - [ ] provider failed doesn't seem to retry
 
 ## donezel
+- [x] subagents
 - [x] diffs || expanded mode
 - [x] we get stuck sometimes. why. what's going on (this hasn't happened in a while)
 - [x] interactive scroll back, show hide thinking etc, expand something to full screen (for terminal multiline copy)
