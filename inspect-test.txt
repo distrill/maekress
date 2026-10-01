@@ -1,5 +1,0 @@
-This is a small test file for the /inspect tool-output flow. Updated for another inspection test.
-
-Edit test: this line was changed once more to check inspect border alignment.
-
-If the new design is working, the edit_file tool call should appear in chat as a compact numbered line, and /inspect <id> should show the detailed output/diff in the footer first.

@@ -11,7 +11,13 @@ coverage/
 !.env.example
 auth.json
 
-# Logs and temporary files
+# Local planning, worktrees, and temporary files
+TODO.md
+.claude/worktrees/
+diff-demo.txt
+inspect-test.txt
+repro-composer.mjs
+repro-permission.mjs
 *.log
 *.tmp
 

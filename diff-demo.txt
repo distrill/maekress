@@ -1,5 +1,0 @@
-hello visible diff viewer, take two
-this line was updated after a fresh restart
-red and green should make edits much easier to scan
-new green line for the scrollback renderer
-another added line to make the diff obvious

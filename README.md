@@ -1,114 +1,120 @@
-# maekress Harness
+# maekress
 
-A personal, hackable harness for making games. See [GOALS.md](./GOALS.md) for
-the longer-term direction.
+A small, hackable AI coding harness for the terminal. Maekress owns its chat loop,
+tool execution, session state, and UI so you can understand—and change—the pieces
+that make an agent useful for your projects.
 
-## Current state
+> **Experimental.** This is a personal project under active development. Review
+> tool activity and do not treat its approval checks as a security boundary.
 
-The first slices are provider-backed chat, a harness-owned tool loop, and a
-tmux-oriented TUI prototype.
-The TUI uses OpenTUI's split-footer mode so settled messages go into normal
-terminal scrollback while the composer stays live at the bottom. The current
-provider adapters stream text and function calls from OpenAI Codex and
-OpenRouter. The harness executes registered tools, returns results to the
-model, and repeats until the model responds normally, without a fixed tool-round
-limit. The main agent can delegate bounded, independent inspection, research, and
-analysis to an isolated read-only subagent. A subagent receives only its task and
-an optional minimal handoff, has no access to the main transcript, cannot recurse,
-and returns a concise report; it cannot edit files or run commands. Routine shell commands and file edits run directly; sensitive paths and
-potentially risky commands require approval in the TUI. MCP connectivity is a
-later step. See [TODO.md](./TODO.md) for planned improvements.
+## Features
 
-OpenAI Codex sign-in uses a browser OAuth flow and stores tokens in
-`~/.config/maekress/auth.json` with restrictive file permissions. This is a
-third-party harness integration against the Codex client transport, not a
-published API contract, so it may change or stop working. Save OpenRouter API
-keys with `/provider add openrouter`; optionally set `OPENROUTER_MODEL`.
-Set `CODEX_MODEL` to override the Codex default model.
-The Codex transport advertises client version `0.156.1` by default so newer
-catalog models are discoverable; override it with `CODEX_CLIENT_VERSION` if
-needed.
-The selected provider and per-provider model are saved in
-`~/.config/maekress/config.json`.
+- Streaming chat with OpenAI Codex, OpenRouter, and Anthropic
+- A terminal UI built with OpenTUI, designed to work well in tmux
+- Built-in project tools for reading, searching, editing files, and running commands
+- Interactive approval for sensitive paths and potentially risky commands
+- Persistent sessions, retries, queued messages, clipboard image attachments, and Git/context status
+- Session-backed todo lists with styled pending, active, and completed states
+- Read-only subagents for bounded inspection, research, and analysis
+- MCP server connections and project-local agent guidance and skills
 
-## Agent guidance and skills
+## Requirements
 
-User-wide guidance and skills live in `~/.config/maekress/agents.md` and
-`~/.config/maekress/skills/`. Project guidance and skills live in
-`.maekress/agents.md` and `.maekress/skills/`. A project may place
-`.maekress/agents.md` in subdirectories: when working on a file, apply each
-applicable instruction file from the project root through that file's directory,
-with the closest guidance taking precedence. The global guidance supplies
-defaults for every project.
+- Node.js **26.4+**
+- A terminal that supports color; tmux is recommended
+- An account or API key for at least one supported provider
 
-Project tools include file listing, chunked reading (using character `offset`
-and `limit`), and text search. Routine file creation, unified-diff patching,
-exact-text edits, and shell commands run without a prompt; sensitive paths and
-potentially risky commands require interactive approval. The command check is
-heuristic, not a security sandbox. File tools stay inside the project root;
-patching can optionally check a SHA-256 to reject stale edits. Built-in and
-future MCP tools share the `HarnessTool` interface and can be added with
-`registerTool`.
+OpenTUI currently requires Node's experimental FFI support. The start script
+includes the necessary runtime flags.
 
-## Run
-
-Requires Node.js 26.4 or newer. OpenTUI currently needs Node's experimental
-FFI flag to load its native renderer.
+## Install and run
 
 ```sh
+git clone <your-fork-url> maekress
+cd maekress
 npm install
 npm start
 ```
 
-Inside the TUI, type `/` to get inline command suggestions (arrow keys to choose, Tab to complete, Enter to run). Use `Enter` to submit a message, `Ctrl+J` for a newline, `Esc`
-to interrupt an active model turn or shell command, and `Ctrl+C` to quit.
-Use `Ctrl+V` or `/paste-image` to attach an image from the **local host clipboard**
-(PNG, JPEG, or WebP, up to 5 MiB). The input title shows the attachment count;
-`[image 01]` is a display marker, not the data sent to the model. Submit with
-`Enter` (with or without text). Image bytes are saved in the private session
-JSON so retry and resume can send them again; this increases session file size.
-A vision-capable model is required. In tmux or over SSH, the clipboard read
-runs on the host running maekress, not in the terminal client; terminal paste of
-an image by itself may not carry image bytes. Use the explicit shortcut or
-command when the image is in that host clipboard.
-The scrollback shows right-aligned user boxes, left-aligned assistant boxes, and
-single-line tool summaries instead of tool arguments and results. Resuming a
-session reconstructs this compact view from saved messages; full tool results
-remain in the session for the model.
-The first footer line shows `user@host`, model/provider, and `ctx: N%` when both
-the provider-reported input token count and model context limit are known. An
-animated working icon appears at the end of that line only while busy. In a Git
-repository, a second line shows the working directory (with home abbreviated to `~`), compact file counts (`'` modified, `-` deleted, `+` added/untracked; zeros
-omitted) or `✓ clean`, then
-the branch name. Context percentage uses the last request size, not cumulative
-usage or a prediction for the next turn. Unknown values are hidden rather than estimated. Use `/help` for key hints. Customize or extend these small modules in `src/status.ts`:
-add a function to `statusModules` and its id to `statusOrder`, or reorder/remove
-ids there. Git status refreshes in the background. The harness currently sends
-the full saved conversation each turn and does not compact it; provider usage
-alone does not solve context exhaustion. At 85%, 90%, and 95% of the model's
-known context limit, one-time notices appear and the status line changes from
-amber to red. These warnings use the last provider-reported request size, not
-an estimate of the next turn; they do not block sending. Use `/new` to save the
-current session and start a fresh one in the same project with the selected
-provider/model; the old resume ID is printed. After a provider error or an
-interrupted request, the submitted message and completed tool rounds are saved;
-send another message to steer the continuation, or use `/retry` to continue without
-sending the message twice. Messages queued during a turn are sent in order when
-that turn ends, including after an interruption. While messages are queued, use
-`Ctrl+K` to select one, `Ctrl+L` to edit it, or `Ctrl+D` to remove it; `Esc` cancels
-an edit and keeps the message queued. Context-limit errors
-also suggest `/new`. No automatic compaction occurs. Input and scrollback messages
-wrap at word boundaries. Interruption cannot undo tool
-operations that have already completed. On exit, the TUI prints `resume with maekress --resume <resume_id>`.
-Run that command from the same project directory to restore the chat and its selected
-provider/model. Sessions are saved under `~/.config/maekress/sessions/` after
-completed turns; an interrupted turn may need to be sent again. Draft text and
-previous terminal scrollback are not restored.
-Submitted messages remain in the terminal's scrollback, so tmux copy mode
-(`prefix` then `[`) can inspect earlier entries.
+Run from the project you want the agent to work in. To resume a prior session:
 
-Use `/provider add codex` to sign in or `/provider add openrouter` to save an API
-key; use `/provider rm <name>` to remove its saved credential. `/model MODEL`
-selects both a model and its provider. OpenRouter keys are stored in the same
-private auth file as Codex credentials. `OPENROUTER_API_KEY` remains supported as
-an environment-variable fallback.
+```sh
+npm start -- --resume <resume_id>
+```
+
+## Connect a provider
+
+Start maekress, then use one of these commands:
+
+```text
+/provider add codex       Sign in with OpenAI in a browser
+/provider add openrouter  Save an OpenRouter API key
+/provider add anthropic   Save an Anthropic API key
+/model                    Browse and select a model
+```
+
+Credentials are stored locally in `~/.config/maekress/auth.json` with restrictive
+permissions. They are not stored in this repository. `OPENROUTER_API_KEY` and
+`ANTHROPIC_API_KEY` are supported as environment-variable fallbacks.
+
+The Codex connection uses an undocumented client transport and may break as that
+transport changes.
+
+## Using the TUI
+
+Type `/help` in the app for the complete reference. The essentials:
+
+| Action | Shortcut / command |
+| --- | --- |
+| Send a message | `Enter` |
+| Insert a newline | `Ctrl+J` |
+| Stop a turn or command | `Esc` |
+| Quit | `Ctrl+C` |
+| Browse command suggestions | `/`, arrows, `Tab` |
+| Attach a clipboard image | `Ctrl+V` or `/paste-image` |
+| Start a fresh session | `/new` |
+| Resume/retry a stopped turn | `/retry` |
+| Browse saved sessions | `/history` |
+| Inspect tool output | `/inspect <id>` |
+
+While a turn is running, messages can be queued. Use `Ctrl+K` to select a queued
+message, `Ctrl+L` to edit it, and `Ctrl+D` to remove it.
+
+Images must be PNG, JPEG, or WebP and are read from the clipboard of the host
+running maekress—not necessarily the machine displaying your terminal over SSH.
+Image data is saved with the session so retries can resend it.
+
+## Safety and privacy
+
+- The agent can make direct in-project edits and run routine commands.
+- It asks for approval before actions it classifies as risky, but this is a
+  convenience safeguard rather than a sandbox. Check commands and diffs.
+- Sessions, credentials, and preferences live under `~/.config/maekress/`.
+  Sessions may contain prompts, tool output, and image data.
+- The complete saved conversation is sent to the selected provider each turn.
+  There is currently no automatic context compaction.
+
+## Customization
+
+Maekress intentionally keeps its implementation small and modular:
+
+- `src/tools.ts` — built-in tool definitions and execution
+- `src/tui.ts` — terminal UI and interaction loop
+- `src/providers/` — provider adapters
+- `src/status.ts` — footer status modules
+- `src/mcp.ts` — MCP connectivity
+
+Global guidance and skills live in `~/.config/maekress/agents.md` and
+`~/.config/maekress/skills/`. Project-specific guidance belongs in
+`.maekress/agents.md` and `.maekress/skills/`; more deeply nested guidance takes
+precedence for files beneath it.
+
+See [GOALS.md](./GOALS.md) for the project direction.
+
+## Development
+
+Run all tests with:
+
+```sh
+node --experimental-ffi --experimental-strip-types --test src/*.test.ts
+```
