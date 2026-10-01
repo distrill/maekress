@@ -679,6 +679,57 @@ export async function startTui(resumed?: Session): Promise<void> {
     showCompletions([], input);
   }
 
+  const compactThreshold = 0.75;
+  const compactKeepRecent = 10;
+  async function compactIfNeeded(
+    prov: ReturnType<typeof getProvider>,
+    model: string,
+    msgs: ModelMessage[],
+    controller: AbortController,
+  ): Promise<void> {
+    if (!statusState.contextUsed || !statusState.contextLimit || statusState.contextLimit <= 0) return;
+    if (statusState.contextUsed / statusState.contextLimit < compactThreshold) return;
+    const systemCount = msgs.filter((m) => m.role === "system").length;
+    const nonSystem = msgs.length - systemCount;
+    if (nonSystem <= compactKeepRecent) return;
+    const dropEnd = msgs.length - compactKeepRecent;
+    let dropStart = 0;
+    while (dropStart < dropEnd && msgs[dropStart]!.role === "system") dropStart++;
+    if (dropStart >= dropEnd) return;
+    const toSummarize = msgs.slice(dropStart, dropEnd);
+    const summaryLines: string[] = [];
+    for (const msg of toSummarize) {
+      if (msg.role === "user") summaryLines.push(`User: ${msg.content.slice(0, 500)}`);
+      else if (msg.role === "assistant" && msg.content) summaryLines.push(`Assistant: ${msg.content.slice(0, 500)}`);
+      else if (msg.role === "tool") summaryLines.push(`Tool ${msg.name ?? "result"}: ${msg.content.slice(0, 200)}`);
+    }
+    const summaryPrompt = `Summarize this conversation history concisely, preserving key decisions, file changes, and current state. Keep it under 2000 characters.\n\n${summaryLines.join("\n")}`;
+    let summary: string;
+    try {
+      startWorking("compacting context");
+      writeGlance(`Context at ${Math.round(statusState.contextUsed / statusState.contextLimit * 100)}% · compacting older messages`);
+      const summaryText: string[] = [];
+      await prov.stream({
+        model,
+        messages: [{ role: "system", content: "You are a concise summarizer. Summarize the conversation history preserving key facts, decisions, file paths, and current state. Be brief." }, { role: "user", content: summaryPrompt }],
+        tools: [],
+        signal: controller.signal,
+        onText: (chunk) => summaryText.push(chunk),
+      });
+      summary = summaryText.join("").trim();
+      if (!summary) throw new Error("Empty summary");
+    } catch {
+      summary = summaryLines.slice(-20).join("\n").slice(0, 2000);
+    }
+    msgs.splice(dropStart, dropEnd - dropStart, {
+      role: "user" as const,
+      content: `[Context compacted — earlier conversation summary]\n${summary}\n[End of summary — conversation continues below]`,
+    });
+    statusState.contextUsed = undefined;
+    warnedContext = 0;
+    writeGlance(`Compacted ${toSummarize.length} messages into summary · ${msgs.length} messages remain`);
+  }
+
   const retryableStatus = /\b(429|500|502|503|529)\b/;
   const maxRetries = 2;
   async function streamWithRetry(
@@ -879,6 +930,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       const readOnlyTools = new Set(["read_file", "list_files", "grep", "search_text", "agent_context", "read_skill"]);
       while (true) {
         controller.signal.throwIfAborted();
+        await compactIfNeeded(provider, activeModel, messages, controller);
         const turnText: string[] = [];
         startWorking("model working");
         const result = await streamWithRetry(provider, activeModel, messages, controller, (chunk) => turnText.push(chunk));
