@@ -16,7 +16,25 @@ import { footerLayout } from "./footer-layout.ts";
 import { imageLabel, imageMarker, readClipboardImage } from "./images.ts";
 import type { ImageAttachment } from "./providers/types.ts";
 
-const systemPrompt = "You are a practical creative coding assistant helping the user make games. Use the available project tools when they help. Execute routine in-project edits and commands without asking first. Check in before risky, destructive, security-sensitive, or unclear actions; the harness may also request approval for those. Explain your work clearly.";
+const systemPrompt = `You are a skilled software engineer and creative coding assistant. You help the user build software — games, tools, integrations, and general projects. Use the available project tools effectively.
+
+Workflow:
+- Read before you write. Before editing a file, read it (or the relevant section) so your edits are accurate. Use grep to find definitions, call sites, and related code before making changes that touch multiple files.
+- Plan multi-step work. For tasks that span more than a couple of files, outline your approach in a few bullet points first. For single-file fixes, just do it.
+- Verify after changes. After modifying code, run the project's tests or build command (if one exists) to confirm nothing broke. If there are no tests, at minimum check that the syntax is valid.
+- Match existing style. Follow the conventions already in the codebase: naming, formatting, patterns. Don't introduce new abstractions, wrappers, or patterns unless the task calls for it.
+- Keep changes minimal. Do exactly what was asked. Don't refactor surrounding code, add speculative features, or "improve" things that weren't part of the request.
+
+Tool use:
+- Execute routine in-project edits and commands without asking first.
+- Check in before risky, destructive, security-sensitive, or unclear actions; the harness may also request approval for those.
+- Use grep for targeted searches. Use list_files only when you need a directory overview.
+- For shell commands, prefer simple direct commands over complex pipelines.
+
+Communication:
+- Be direct and concise. Lead with what you did or what you found, not what you're about to do.
+- When something fails, say what went wrong and what you'll try instead.
+- Don't narrate each tool call. Let results speak.`;
 
 type Completion = { insert: string; label: string };
 
@@ -661,6 +679,35 @@ export async function startTui(resumed?: Session): Promise<void> {
     showCompletions([], input);
   }
 
+  const retryableStatus = /\b(429|500|502|503|529)\b/;
+  const maxRetries = 2;
+  async function streamWithRetry(
+    prov: ReturnType<typeof getProvider>,
+    model: string,
+    msgs: ModelMessage[],
+    controller: AbortController,
+    onText: (chunk: string) => void,
+  ) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await prov.stream({ model, messages: msgs, tools: getToolDefinitions(), signal: controller.signal, onText });
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+        const msg = error instanceof Error ? error.message : String(error);
+        if (attempt < maxRetries && retryableStatus.test(msg)) {
+          const delay = Math.min(2000 * 2 ** attempt, 8000);
+          writeGlance(`Provider returned a transient error · retrying in ${delay / 1000}s (attempt ${attempt + 2}/${maxRetries + 1})`);
+          startWorking("retrying");
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          controller.signal.throwIfAborted();
+          startWorking("model working");
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
   async function handleInput(text: string, fromQueue = false, images: ImageAttachment[] = []): Promise<void> {
     const input = text.trim();
     if (!input && !images.length) return;
@@ -829,19 +876,12 @@ export async function startTui(resumed?: Session): Promise<void> {
     turnController = controller;
     try {
       await checkpoint();
+      const readOnlyTools = new Set(["read_file", "list_files", "grep", "search_text", "agent_context", "read_skill"]);
       while (true) {
         controller.signal.throwIfAborted();
         const turnText: string[] = [];
         startWorking("model working");
-        const result = await provider.stream({
-          model: activeModel,
-          messages,
-          tools: getToolDefinitions(),
-          signal: controller.signal,
-          onText(chunk) {
-            turnText.push(chunk);
-          },
-        });
+        const result = await streamWithRetry(provider, activeModel, messages, controller, (chunk) => turnText.push(chunk));
         controller.signal.throwIfAborted();
         statusState.contextUsed = result.inputTokens;
         renderStatus();
@@ -862,34 +902,55 @@ export async function startTui(resumed?: Session): Promise<void> {
           flushToolBatch();
           writeScrollback(chatBox("assistant", answer, columns(), provider.label), transcriptColors.assistant);
         }
-        for (const call of result.toolCalls) {
-          controller.signal.throwIfAborted();
-          startWorking(`running ${call.name}`);
-          const toolStartedAt = performance.now();
-          let toolResult: string;
-          try {
-            const parsed = JSON.parse(call.arguments) as unknown;
-            if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-              throw new Error("Tool arguments must be a JSON object.");
+        const allReadOnly = result.toolCalls.every((call) => readOnlyTools.has(call.name));
+        if (allReadOnly && result.toolCalls.length > 1) {
+          startWorking(`running ${result.toolCalls.length} tools`);
+          const batchStart = performance.now();
+          const results = await Promise.all(result.toolCalls.map(async (call) => {
+            try {
+              const parsed = JSON.parse(call.arguments) as unknown;
+              if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Tool arguments must be a JSON object.");
+              return await executeTool(call.name, parsed as Record<string, unknown>, { projectRoot: process.cwd(), confirm: confirmTool, signal: controller.signal });
+            } catch (error) {
+              return `Tool error: ${error instanceof Error ? error.message : String(error)}`;
             }
-            toolResult = await executeTool(call.name, parsed as Record<string, unknown>, {
-              projectRoot: process.cwd(),
-              confirm: confirmTool,
-              signal: controller.signal,
-            });
-          } catch (error) {
-            toolResult = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
-          } finally {
-            approvalBox.visible = false;
-            resizeComposer();
-          }
+          }));
           controller.signal.throwIfAborted();
-          messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: toolResult });
-          // Clear the previous preview before committing it to scrollback.
-          // Otherwise the same line briefly appears in both places.
-          if (toolBatch.count && toolBatch.label !== toolTarget(call)) flushToolBatch();
-          toolBatch.add(call, toolResult, columns(), performance.now() - toolStartedAt);
+          for (let i = 0; i < result.toolCalls.length; i++) {
+            const call = result.toolCalls[i]!;
+            messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: results[i]! });
+            if (toolBatch.count && toolBatch.label !== toolTarget(call)) flushToolBatch();
+            toolBatch.add(call, results[i]!, columns(), performance.now() - batchStart);
+          }
           updatePendingTool();
+        } else {
+          for (const call of result.toolCalls) {
+            controller.signal.throwIfAborted();
+            startWorking(`running ${call.name}`);
+            const toolStartedAt = performance.now();
+            let toolResult: string;
+            try {
+              const parsed = JSON.parse(call.arguments) as unknown;
+              if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+                throw new Error("Tool arguments must be a JSON object.");
+              }
+              toolResult = await executeTool(call.name, parsed as Record<string, unknown>, {
+                projectRoot: process.cwd(),
+                confirm: confirmTool,
+                signal: controller.signal,
+              });
+            } catch (error) {
+              toolResult = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+            } finally {
+              approvalBox.visible = false;
+              resizeComposer();
+            }
+            controller.signal.throwIfAborted();
+            messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: toolResult });
+            if (toolBatch.count && toolBatch.label !== toolTarget(call)) flushToolBatch();
+            toolBatch.add(call, toolResult, columns(), performance.now() - toolStartedAt);
+            updatePendingTool();
+          }
         }
         void readGitStatus(statusState.cwd).then((git) => { statusState.git = git; renderStatus(); });
         await checkpoint();
