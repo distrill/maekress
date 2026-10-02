@@ -36,10 +36,16 @@ npm install
 npm start
 ```
 
-Run from the project you want the agent to work in. To resume a prior session:
+Run from the project you want the agent to work in. To restore the most recent session:
 
 ```sh
-npm start -- --resume <resume_id>
+npm start -- restore
+```
+
+To restore a specific session:
+
+```sh
+npm start -- restore <session_id>
 ```
 
 ## Connect a provider
@@ -74,7 +80,6 @@ Type `/help` in the app for the complete reference. The essentials:
 | Attach a clipboard image | `Ctrl+V` or `/paste-image` |
 | Start a fresh session | `/new` |
 | Resume/retry a stopped turn | `/retry` |
-| Browse saved sessions | `/history` |
 | Inspect tool output | `/inspect <id>` |
 
 While a turn is running, messages can be queued. Use `Ctrl+K` to select a queued

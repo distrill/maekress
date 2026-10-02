@@ -264,7 +264,7 @@ async function collectFiles(directory: string, relative = ""): Promise<string[]>
 const builtinTools: HarnessTool[] = [
   {
     name: "agent_context",
-    description: "Get applicable maekress agent instructions and available skills for a project path. Resolve this before changing files.",
+    description: "Get applicable maekress agent instructions and available skills for a project path. Resolve this before changing files, and reuse the result for further changes in the same directory.",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string", description: "Target file or directory relative to the project root; defaults to the root." } },

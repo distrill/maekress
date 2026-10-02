@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { newSession, saveSession, loadSession } from "./sessions.ts";
+import { loadLatestSession, newSession, saveSession, loadSession } from "./sessions.ts";
 
 test("session checkpoint and resume preserve messages and selection", async () => {
   const session = newSession(process.cwd(), "openai-codex", "example-model", "instructions");
@@ -19,6 +19,15 @@ test("queued messages and todos persist across save and resume", async () => {
   session.todos = [{ content: "implement todos", status: "in_progress" }];
   await saveSession(session);
   assert.deepEqual(await loadSession(session.id), session);
+});
+
+test("loads the most recently saved session", async () => {
+  const older = newSession(process.cwd(), "openai-codex", "example-model", "instructions");
+  await saveSession(older);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const latest = newSession(process.cwd(), "openai-codex", "example-model", "instructions");
+  await saveSession(latest);
+  assert.deepEqual(await loadLatestSession(), latest);
 });
 
 test("reject malformed and nonexistent resume IDs", async () => {

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { ImageAttachment, ModelMessage } from "./providers/types.ts";
@@ -61,6 +61,25 @@ export async function loadSession(id: string): Promise<Session> {
     throw new Error("Session file is invalid or unsupported.");
   }
   return session;
+}
+
+export async function loadLatestSession(): Promise<Session> {
+  let entries: string[];
+  try {
+    entries = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("No saved sessions found.");
+    throw error;
+  }
+  const sessions = await Promise.all(entries
+    .filter((entry) => /^[a-f0-9]{32}\.json$/.test(entry))
+    .map(async (entry) => ({
+      id: entry.slice(0, -".json".length),
+      modified: (await stat(path.join(directory, entry))).mtimeMs,
+    })));
+  const latest = sessions.sort((a, b) => b.modified - a.modified)[0];
+  if (!latest) throw new Error("No saved sessions found.");
+  return loadSession(latest.id);
 }
 
 const pendingSaves = new Map<string, Promise<void>>();

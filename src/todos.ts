@@ -4,6 +4,10 @@ export const todoStatuses = ["pending", "in_progress", "completed"] as const;
 export type TodoStatus = (typeof todoStatuses)[number];
 export type Todo = { content: string; status: TodoStatus };
 
+export function hasIncompleteTodos(todos: Todo[]): boolean {
+  return todos.some((todo) => todo.status !== "completed");
+}
+
 export function todoMarker(status: TodoStatus): string {
   return status === "completed" ? "[x]" : status === "in_progress" ? "[~]" : "[ ]";
 }

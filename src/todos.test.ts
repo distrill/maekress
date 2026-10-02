@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { todoMarker, todoTools } from "./todos.ts";
+import { hasIncompleteTodos, todoMarker, todoTools } from "./todos.ts";
 
 const context = (todos: Parameters<(typeof todoTools)[number]["execute"]>[1]["todos"] = []) => ({
   projectRoot: process.cwd(),
@@ -29,6 +29,13 @@ test("todo markers reflect each status", () => {
   assert.equal(todoMarker("pending"), "[ ]");
   assert.equal(todoMarker("in_progress"), "[~]");
   assert.equal(todoMarker("completed"), "[x]");
+});
+
+test("completed todo lists can be distinguished from active ones", () => {
+  assert.equal(hasIncompleteTodos([]), false);
+  assert.equal(hasIncompleteTodos([{ content: "done", status: "completed" }]), false);
+  assert.equal(hasIncompleteTodos([{ content: "working", status: "in_progress" }]), true);
+  assert.equal(hasIncompleteTodos([{ content: "next", status: "pending" }]), true);
 });
 
 test("todo_write rejects invalid items", async () => {

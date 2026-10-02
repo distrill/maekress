@@ -1,9 +1,9 @@
 import { startTui } from "./tui.ts";
-import { loadSession } from "./sessions.ts";
+import { loadLatestSession, loadSession } from "./sessions.ts";
 
 const args = process.argv.slice(2);
-if (args.length !== 0 && (args.length !== 2 || args[0] !== "--resume")) {
-  console.error("Usage: maekress [--resume <resume_id>]");
+if (args.length !== 0 && (args[0] !== "restore" || args.length > 2)) {
+  console.error("Usage: maekress [restore [session_id]]");
   process.exitCode = 1;
 } else {
   try {
@@ -15,9 +15,9 @@ if (args.length !== 0 && (args.length !== 2 || args[0] !== "--resume")) {
       throw new Error(`This harness needs Node.js 26.4 or newer (found ${process.versions.node}). Check with: node --version`);
     }
     process.stderr.write(`Starting maekress with Node.js ${process.versions.node}…\n`);
-    const session = args.length ? await loadSession(args[1]!) : undefined;
+    const session = args.length ? await (args[1] ? loadSession(args[1]) : loadLatestSession()) : undefined;
     if (session && session.projectRoot !== process.cwd()) {
-      throw new Error(`This session belongs to ${session.projectRoot}. Run maekress from that directory to resume.`);
+      throw new Error(`This session belongs to ${session.projectRoot}. Run maekress from that directory to restore it.`);
     }
     await startTui(session);
   } catch (error) {

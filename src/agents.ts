@@ -5,6 +5,10 @@ import path from "node:path";
 export const maekressDirectory = path.join(homedir(), ".config", "maekress");
 const maxInstructionBytes = 48_000;
 const maxSkillFiles = 100;
+const contextCacheTtlMs = 5_000;
+
+type CachedContext = { expiresAt: number; value: Promise<AgentContext> };
+const contextCache = new Map<string, CachedContext>();
 
 export type AgentFile = { path: string; content: string };
 export type AgentContext = { instructions: AgentFile[]; skills: string[] };
@@ -53,12 +57,28 @@ export async function globalAgentGuidance(): Promise<AgentFile | undefined> {
 
 export async function resolveAgentContext(projectRoot: string, targetPath = "."): Promise<AgentContext> {
   const root = await realpath(projectRoot);
+  const segments = projectSegments(root, targetPath);
+  const cacheKey = `${root}\0${segments.join(path.sep)}`;
+  const cached = contextCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const value = resolveAgentContextUncached(root, segments);
+  contextCache.set(cacheKey, { expiresAt: Date.now() + contextCacheTtlMs, value });
+  try {
+    return await value;
+  } catch (error) {
+    contextCache.delete(cacheKey);
+    throw error;
+  }
+}
+
+async function resolveAgentContextUncached(root: string, segments: string[]): Promise<AgentContext> {
   const instructions: AgentFile[] = [];
   const global = await globalAgentGuidance();
   if (global) instructions.push(global);
   const directories = [root];
   let current = root;
-  for (const segment of projectSegments(root, targetPath)) {
+  for (const segment of segments) {
     current = path.join(current, segment);
     directories.push(current);
   }
