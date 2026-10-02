@@ -102,17 +102,15 @@ function applyUnifiedPatch(contents: string, patch: string): string {
   const hadFinalNewline = contents.endsWith("\n");
   const source = contents.split(/\r?\n/);
   if (hadFinalNewline) source.pop();
-  const patchLines = patch.split(/\r?\n/);
+  const patchLines = patch.split(/\r?\n/).filter((line) => line !== "*** Begin Patch" && line !== "*** End Patch");
   if (patchLines.at(-1) === "") patchLines.pop();
-  const hunks: Array<{ start: number; oldCount: number; newCount: number; lines: string[] }> = [];
+  const hunks: Array<{ start?: number; lines: string[] }> = [];
   let active: (typeof hunks)[number] | undefined;
   for (const line of patchLines) {
-    const header = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-    if (header) {
+    const header = line.match(/^@@(?: -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@|$)/);
+    if (header !== null) {
       active = {
-        start: Math.max(0, Number(header[1]) - 1),
-        oldCount: header[2] === undefined ? 1 : Number(header[2]),
-        newCount: header[4] === undefined ? 1 : Number(header[4]),
+        start: header[1] === undefined ? undefined : Math.max(0, Number(header[1]) - 1),
         lines: [],
       };
       hunks.push(active);
@@ -127,19 +125,14 @@ function applyUnifiedPatch(contents: string, patch: string): string {
     }
   }
   if (!hunks.length) throw new Error("Patch contains no unified diff hunks.");
-  for (const hunk of hunks) {
-    const oldCount = hunk.lines.filter((line) => line[0] !== "+").length;
-    const newCount = hunk.lines.filter((line) => line[0] !== "-").length;
-    if (oldCount !== hunk.oldCount || newCount !== hunk.newCount) throw new Error("Patch hunk line counts do not match its header.");
-  }
 
   let offset = 0;
   for (const hunk of hunks) {
     const oldLines = hunk.lines.filter((line) => line[0] !== "+").map((line) => line.slice(1));
     const newLines = hunk.lines.filter((line) => line[0] !== "-").map((line) => line.slice(1));
-    let position = hunk.start + offset;
     const matchesAt = (start: number) => oldLines.every((line, index) => source[start + index] === line);
-    if (!matchesAt(position)) {
+    let position = hunk.start === undefined ? -1 : hunk.start + offset;
+    if (position < 0 || !matchesAt(position)) {
       const candidates = source.flatMap((_, index) => matchesAt(index) ? [index] : []);
       if (candidates.length !== 1) throw new Error(candidates.length ? "Patch context is ambiguous; include more context." : "Patch context did not match the current file.");
       position = candidates[0]!;
@@ -425,12 +418,12 @@ const builtinTools: HarnessTool[] = [
   },
   {
     name: "apply_patch",
-    description: "Apply a unified diff to one project file. Sensitive paths require approval. Optionally provide the SHA-256 of the version you read to reject stale edits.",
+    description: "Apply a unified diff to one project file. Accepts standard @@ -old,+new @@ hunks and common *** Begin/End Patch wrappers; include enough unchanged context for every hunk to be unique. Sensitive paths require approval. Optionally provide the SHA-256 of the version you read to reject stale edits.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "File path relative to the project root." },
-        patch: { type: "string", description: "Unified diff containing one or more hunks for this file." },
+        patch: { type: "string", description: "A unified diff containing one or more @@ hunks for this file. *** Begin Patch and *** End Patch wrapper lines are also accepted." },
         expected_sha256: { type: "string", description: "Optional SHA-256 of the current file contents." },
       },
       required: ["path", "patch"],

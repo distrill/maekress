@@ -199,15 +199,24 @@ export function historyEntries(messages: ModelMessage[], columns = 80, names: Di
     activeInspectId = id;
     return id;
   };
+  const inspectChat = (title: string, content: string): string | undefined => {
+    if (!inspectRecords) return undefined;
+    const id = String(nextInspectId++).padStart(3, "0");
+    inspectRecords.set(id, { id, title, content });
+    return id;
+  };
   for (const message of messages) {
     if (message.role === "user") {
       flush();
-      entries.push({ role: "user", text: chatBox("user", imageLabel(message), columns, names.user, names) });
+      const id = inspectChat("user message", message.content);
+      entries.push({ role: "user", text: chatBox("user", imageLabel(message), columns, `${names.user}${id ? ` [${id}]` : ""}`, names) });
     }
     if (message.role === "assistant") {
       if (message.content) {
         flush();
-        entries.push({ role: "assistant", text: chatBox("assistant", message.content, columns, names.agent, names), styled: markdownBox(message.content, columns, names.agent, assistantBorder) });
+        const id = inspectChat("assistant message", message.content);
+        const label = `${names.agent}${id ? ` [${id}]` : ""}`;
+        entries.push({ role: "assistant", text: chatBox("assistant", message.content, columns, label, names), styled: markdownBox(message.content, columns, label, assistantBorder) });
       }
       for (const call of message.toolCalls ?? []) {
         const result = messages.find((item) => item.role === "tool" && item.toolCallId === call.id);

@@ -16,8 +16,12 @@ export function maekressBanner(columns: number): string {
   const inner = Math.max(0, boxWidth - 4);
   const top = `╭${"─".repeat(Math.max(0, boxWidth - 2))}╮`;
   const bottom = `╰${"─".repeat(Math.max(0, boxWidth - 2))}╯`;
-  const artWidth = Math.max(...bannerLines.map(width));
-  const artLeft = Math.max(0, Math.floor((inner - Math.min(inner, artWidth)) / 2));
+  // The ASCII art has a two-column built-in left margin. Center its visible
+  // bounds rather than its whitespace-padded lines.
+  const artLeftEdge = Math.min(...bannerLines.map((line) => width(line) - width(line.trimStart())));
+  const artRightEdge = Math.max(...bannerLines.map((line) => width(line.trimEnd())));
+  const artWidth = artRightEdge - artLeftEdge;
+  const artLeft = Math.max(0, Math.floor((inner - Math.min(inner, artWidth)) / 2) - artLeftEdge);
   const rows = ["", ...bannerLines, ""].map((line) => {
     const content = take(line, Math.max(0, inner - artLeft))[0];
     const right = Math.max(0, inner - artLeft - width(content));

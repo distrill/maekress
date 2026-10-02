@@ -49,6 +49,21 @@ test("tool details stay in one sanitized line, including failures", () => {
 });
 
 
+test("chat messages receive inspect records on restore", () => {
+  const records = new Map();
+  historyEntries([
+    { role: "user", content: "## prompt" },
+    { role: "assistant", content: "*answer*" },
+  ], 80, undefined, records);
+  assert.deepEqual(
+    [...records.values()].map(({ title, content }) => ({ title, content })),
+    [
+      { title: "user message", content: "## prompt" },
+      { title: "assistant message", content: "*answer*" },
+    ],
+  );
+});
+
 test("todo calls stay out of restored scrollback", () => {
   const todo = {
     id: "1",

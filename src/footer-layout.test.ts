@@ -65,6 +65,12 @@ test("todos take available footer space without hiding the composer", () => {
   assert.equal(layout.height, 10);
 });
 
+test("todos and queued cards both receive their requested rows", () => {
+  const layout = footerLayout(24, 1, 0, 0, 4, 0, 0, 0, 3);
+  assert.equal(layout.todos, 3);
+  assert.equal(layout.queued, 4);
+});
+
 test("inspect preview shrinks before the composer as draft grows", () => {
   const oneLine = footerLayout(24, 1, 0, 0, 0, 0, 0, 20);
   const twoLines = footerLayout(24, 2, 0, 0, 0, 0, 0, 20);

@@ -20,6 +20,7 @@ repro-composer.mjs
 repro-permission.mjs
 *.log
 *.tmp
+.maekress/apply-patch-failures.jsonl
 
 # Editor and OS files
 .DS_Store

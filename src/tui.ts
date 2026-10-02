@@ -1,3 +1,4 @@
+import { appendFile, mkdir } from "node:fs/promises";
 import {
   BoxRenderable,
   TextRenderable,
@@ -62,6 +63,28 @@ import { configureSubagents } from "./subagents.ts";
 import { maekressBanner } from "./banner.ts";
 import { take, width as textWidth } from "./text-width.ts";
 
+async function logPatchFailure(call: { name: string; arguments: string }, error: unknown): Promise<void> {
+  if (call.name !== "apply_patch") return;
+  let input: Record<string, unknown> | undefined;
+  try {
+    const parsed = JSON.parse(call.arguments) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) input = parsed as Record<string, unknown>;
+  } catch { /* The tool error reports invalid arguments. */ }
+  const patch = typeof input?.patch === "string" ? input.patch : undefined;
+  const entry = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    error: error instanceof Error ? error.message : String(error),
+    path: typeof input?.path === "string" ? input.path : undefined,
+    patch,
+    expectedSha256: typeof input?.expected_sha256 === "string" ? input.expected_sha256 : undefined,
+  });
+  try {
+    const directory = `${process.cwd()}/.maekress/errors`;
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await appendFile(`${directory}/apply-patch-failures.jsonl`, `${entry}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch { /* Logging must not hide the tool failure. */ }
+}
+
 const systemPrompt = `You are a skilled software engineer and creative coding assistant. You help the user build software — games, tools, integrations, and general projects. Use the available project tools effectively.
 
 Workflow:
@@ -100,6 +123,7 @@ const transcriptColors = {
   assistant: "#C4A7E7",
   tool: "#908CAA",
   subagent: "#AFD7FF",
+  rawHeader: "#6E6A86",
 } as const;
 const transcriptBorder = "#E0DEF4";
 const diffColors = {
@@ -326,13 +350,24 @@ export async function startTui(resumed?: Session): Promise<void> {
   const writeStyledScrollback = (box: MarkdownBox): void => {
     commitPendingInspect();
     const rows = box.rows.map((row) =>
-      row.map((span) =>
-        span.text.includes("╭") ||
-        span.text.includes("│") ||
-        span.text.includes("╰")
-          ? { ...span, fg: RGBA.fromHex(transcriptBorder) }
-          : span,
-      ),
+      row.flatMap((span) => {
+        if (
+          !span.text.includes("╭") &&
+          !span.text.includes("│") &&
+          !span.text.includes("╰")
+        )
+          return span;
+        const id = / \[\d{3}\] /.exec(span.text);
+        if (!id || id.index === undefined)
+          return { ...span, fg: RGBA.fromHex(transcriptBorder) };
+        const start = id.index;
+        const end = start + id[0].length;
+        return [
+          { ...span, text: span.text.slice(0, start), fg: RGBA.fromHex(transcriptBorder) },
+          { ...span, text: id[0], fg: RGBA.fromHex(transcriptColors.tool) },
+          { ...span, text: span.text.slice(end), fg: RGBA.fromHex(transcriptBorder) },
+        ].filter((chunk) => chunk.text);
+      }),
     );
     if (!rows.length) return;
     renderer.writeToScrollback(({ renderContext, width }) => {
@@ -380,6 +415,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   const inputWidth = () => Math.max(1, renderer.width - 1);
   const composerTitle = () =>
     ` ${displayNames.user}${draftImages.length ? ` · ${draftImages.length} image${draftImages.length === 1 ? "" : "s"} attached` : ""} `;
+  const inspectLabel = (label: string, id: string) => `${label} [${id}]`;
   const styledPlainChatBox = (box: string, color: string): StyledText => {
     const chunks: TextChunk[] = [];
     const lines = box.split("\n");
@@ -486,7 +522,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       content: entry.content,
       ...(entry.images ? { images: entry.images } : {}),
     })) ?? [];
-  let pendingDraft: { content: string; images: ImageAttachment[] } | undefined;
+  let pendingDraft: { content: string; images: ImageAttachment[]; inspectId: string } | undefined;
   let queuedSelected = -1;
   let queuedEditing = -1;
   let queuedDirty = false;
@@ -786,6 +822,16 @@ export async function startTui(resumed?: Session): Promise<void> {
     const diffStart = plain.indexOf("✦ ");
     return diffStart >= 0 ? plain.slice(diffStart) : plain;
   }
+  function dumpRaw(id: string): void {
+    const record = inspectRecords.get(id.padStart(3, "0"));
+    if (!record) {
+      writeGlance(`No inspect output for [${id}]`);
+      return;
+    }
+    clearPendingInspect();
+    writeScrollback(`[${record.id}] ${record.title}`, transcriptColors.rawHeader);
+    writeScrollback(clean(record.content), transcriptColors.tool);
+  }
   function inspectContentRows(record: InspectRecord, inner: number): string[] {
     const rows: string[] = [];
     for (const rawLine of inspectContent(record)
@@ -831,7 +877,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         `│ ${line}${" ".repeat(Math.max(0, inner - textWidth(line)))} │`,
       );
     if (omitted > 0) {
-      const note = `… ${omitted} more line${omitted === 1 ? "" : "s"} · press Enter to commit full output`;
+      const note = `… ${omitted} more line${omitted === 1 ? "" : "s"} · Enter: full output · r: raw`;
       const line = take(note, inner)[0];
       lines.push(
         `│ ${line}${" ".repeat(Math.max(0, inner - textWidth(line)))} │`,
@@ -1003,7 +1049,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     pendingInspectLines = text.split("\n").length;
     scheduleComposerResize();
   }
-  function pendingUserBox(input: string, images: ImageAttachment[]): string {
+  function pendingUserBox(input: string, images: ImageAttachment[], inspectId: string): string {
     const userMessage = {
       role: "user" as const,
       content: input,
@@ -1016,25 +1062,25 @@ export async function startTui(resumed?: Session): Promise<void> {
       "user",
       imageLabel(userMessage),
       columns(),
-      displayNames.user,
+      inspectLabel(displayNames.user, inspectId),
       displayNames,
     )
       .replace(/^\n/, "")
       .replace(/\n$/, "")
       .replace(/^ /gm, "");
   }
-  function showPendingUser(input: string, images: ImageAttachment[]): void {
+  function showPendingUser(input: string, images: ImageAttachment[], inspectId: string): void {
     commitPendingInspect();
-    const box = pendingUserBox(input, images);
+    const box = pendingUserBox(input, images, inspectId);
     pendingUserView.content = styledPlainChatBox(box, transcriptColors.user);
     pendingUserView.visible = true;
     pendingUserLines = box.split("\n").length;
-    pendingDraft = { content: input, images: [...images] };
+    pendingDraft = { content: input, images: [...images], inspectId };
     scheduleComposerResize();
   }
   function commitPendingUser(): void {
     if (!pendingDraft) return;
-    const { content, images } = pendingDraft;
+    const { content, images, inspectId } = pendingDraft;
     const userMessage = {
       role: "user" as const,
       content,
@@ -1049,7 +1095,7 @@ export async function startTui(resumed?: Session): Promise<void> {
         "user",
         imageLabel(userMessage),
         columns(),
-        displayNames.user,
+        inspectLabel(displayNames.user, inspectId),
         displayNames,
       ),
       transcriptColors.user,
@@ -1066,7 +1112,6 @@ export async function startTui(resumed?: Session): Promise<void> {
   let workingPhase = "";
   let subagentActive = false;
   let workingFrame = 0;
-  let lastMessageAt: number | undefined;
   let lastEventAt: number | undefined;
   let notice = "ready";
   let warnedContext: ContextWarning = 0;
@@ -1090,7 +1135,7 @@ export async function startTui(resumed?: Session): Promise<void> {
           ? "#F6C177"
           : statusColor;
     activityView.content = workingTimer
-      ? `${frames[workingFrame++ % frames.length]} ${workingPhase} · Esc to stop${lastMessageAt === undefined ? "" : ` · ${elapsed(Date.now() - lastMessageAt)}`}`
+      ? `${frames[workingFrame++ % frames.length]} ${workingPhase} · Esc to stop${lastEventAt === undefined ? "" : ` · ${elapsed(performance.now() - lastEventAt)}`}`
       : "";
     activityView.fg = subagentActive ? transcriptColors.subagent : "#E0DEF4";
     pendingToolView.fg = subagentActive
@@ -1411,7 +1456,11 @@ export async function startTui(resumed?: Session): Promise<void> {
     const rows = process.stdout.rows || 24;
     inputBox.width = inputWidth();
     if (pendingDraft) {
-      const box = pendingUserBox(pendingDraft.content, pendingDraft.images);
+      const box = pendingUserBox(
+        pendingDraft.content,
+        pendingDraft.images,
+        pendingDraft.inspectId,
+      );
       pendingUserView.content = styledPlainChatBox(box, transcriptColors.user);
       pendingUserLines = box.split("\n").length;
     }
@@ -1749,6 +1798,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       "help",
       "history",
       "inspect",
+      "raw",
       "mcp",
       "model",
       "name",
@@ -1781,7 +1831,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
     const command = input.slice(0, firstSpace);
     const query = input.slice(firstSpace + 1).trimStart();
-    if (command === "/inspect") {
+    if (command === "/inspect" || command === "/raw") {
       return showCompletions(
         matchChoices(
           query,
@@ -1789,7 +1839,7 @@ export async function startTui(resumed?: Session): Promise<void> {
             .slice(-20)
             .reverse()
             .map((record) => ({
-              insert: `/inspect ${record.id}`,
+              insert: `${command} ${record.id}`,
               label: `${record.id} · ${record.title}`,
             })),
         ),
@@ -1981,10 +2031,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   ): Promise<void> {
     const input = text.trim();
     if (!input && !images.length) return;
-    if (!fromQueue && !input.startsWith("/")) {
-      lastMessageAt = Date.now();
-      lastEventAt = performance.now();
-    }
+    if (!fromQueue && !input.startsWith("/")) lastEventAt = performance.now();
     if (busy || (queuedMessages.length && !fromQueue)) {
       if (input.startsWith("/")) {
         writeGlance(
@@ -2013,7 +2060,9 @@ export async function startTui(resumed?: Session): Promise<void> {
 ` +
           `  /history                      Browse saved sessions
 ` +
-          `  /inspect <id>                 Open saved tool or subagent output
+          `  /inspect <id>                 Open saved chat, tool, or subagent output
+` +
+          `  /raw <id>                     Dump saved output directly to scrollback
 
 ` +
           `MODEL & ACCOUNT
@@ -2047,6 +2096,8 @@ export async function startTui(resumed?: Session): Promise<void> {
 ` +
           `  Esc         Stop turn / cancel edit   Ctrl+V      Paste clipboard image
 ` +
+          `  r           Dump open inspect output as raw text
+` +
           `  Ctrl+C      Quit
 
 ` +
@@ -2078,6 +2129,19 @@ export async function startTui(resumed?: Session): Promise<void> {
       showInspect(
         input
           .slice("/inspect ".length)
+          .trim()
+          .replace(/^\[|\]$/g, ""),
+      );
+      return;
+    }
+    if (input === "/raw") {
+      writeGlance("Usage: /raw <id> (for example /raw 001)");
+      return;
+    }
+    if (input.startsWith("/raw ")) {
+      dumpRaw(
+        input
+          .slice("/raw ".length)
           .trim()
           .replace(/^\[|\]$/g, ""),
       );
@@ -2380,7 +2444,8 @@ export async function startTui(resumed?: Session): Promise<void> {
         content: input,
         ...(images.length ? { images } : {}),
       });
-      showPendingUser(input, images);
+      const inspectId = allocateInspectRecord("user message", input);
+      showPendingUser(input, images, inspectId);
     }
     retryable = false;
     const controller = new AbortController();
@@ -2421,13 +2486,16 @@ export async function startTui(resumed?: Session): Promise<void> {
           flushToolBatch();
           stopWorking();
           messages.push({ role: "assistant", content: answer });
+          const inspectId = answer
+            ? allocateInspectRecord("assistant message", answer)
+            : undefined;
           await checkpoint();
           if (answer)
             writeStyledScrollback(
               markdownBox(
                 answer,
                 columns(),
-                displayNames.agent,
+                inspectLabel(displayNames.agent, inspectId!),
                 transcriptColors.assistant,
               ),
             );
@@ -2440,13 +2508,16 @@ export async function startTui(resumed?: Session): Promise<void> {
           content: answer,
           toolCalls: result.toolCalls,
         });
+        const inspectId = answer
+          ? allocateInspectRecord("assistant message", answer)
+          : undefined;
         if (answer) {
           flushToolBatch();
           writeStyledScrollback(
             markdownBox(
               answer,
               columns(),
-              displayNames.agent,
+              inspectLabel(displayNames.agent, inspectId!),
               transcriptColors.assistant,
             ),
           );
@@ -2472,7 +2543,7 @@ export async function startTui(resumed?: Session): Promise<void> {
                   Array.isArray(parsed)
                 )
                   throw new Error("Tool arguments must be a JSON object.");
-                return await executeTool(
+                const toolResult = await executeTool(
                   call.name,
                   parsed as Record<string, unknown>,
                   {
@@ -2482,8 +2553,12 @@ export async function startTui(resumed?: Session): Promise<void> {
                     todos,
                   },
                 );
+                return { result: toolResult, completedAt: performance.now() };
               } catch (error) {
-                return `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+                return {
+                  result: `Tool error: ${error instanceof Error ? error.message : String(error)}`,
+                  completedAt: performance.now(),
+                };
               }
             }),
           );
@@ -2492,7 +2567,7 @@ export async function startTui(resumed?: Session): Promise<void> {
           else renderTodos();
           for (let i = 0; i < result.toolCalls.length; i++) {
             const call = result.toolCalls[i]!;
-            const toolResult = results[i]!;
+            const { result: toolResult, completedAt } = results[i]!;
             messages.push({
               role: "tool",
               toolCallId: call.id,
@@ -2503,10 +2578,7 @@ export async function startTui(resumed?: Session): Promise<void> {
               flushToolBatch();
               continue;
             }
-            const duration = Math.max(
-              performance.now() - batchStart,
-              sinceLastEvent,
-            );
+            const duration = Math.max(0, completedAt - (lastEventAt ?? batchStart));
             if (call.name === "delegate") {
               flushToolBatch();
               const inspectId = allocateInspectRecord(
@@ -2539,15 +2611,13 @@ export async function startTui(resumed?: Session): Promise<void> {
             if (flushed) writeScrollback(flushed, transcriptColors.tool);
           }
           subagentActive = false;
-          lastEventAt = performance.now();
+          lastEventAt = Math.max(...results.map(({ completedAt }) => completedAt));
           updatePendingTool();
         } else {
           for (const call of result.toolCalls) {
             controller.signal.throwIfAborted();
             subagentActive = call.name === "delegate";
             startWorking(`running ${call.name}`);
-            const sinceLastEvent =
-              lastEventAt === undefined ? 0 : performance.now() - lastEventAt;
             const toolStartedAt = performance.now();
             let toolResult: string;
             try {
@@ -2570,6 +2640,7 @@ export async function startTui(resumed?: Session): Promise<void> {
                 },
               );
             } catch (error) {
+              await logPatchFailure(call, error);
               toolResult = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
             } finally {
               approvalBox.visible = false;
@@ -2590,10 +2661,7 @@ export async function startTui(resumed?: Session): Promise<void> {
               updatePendingTool();
               continue;
             }
-            const duration = Math.max(
-              performance.now() - toolStartedAt,
-              sinceLastEvent,
-            );
+            const duration = Math.max(0, performance.now() - (lastEventAt ?? toolStartedAt));
             if (call.name === "delegate") {
               flushToolBatch();
               const inspectId = allocateInspectRecord(
@@ -2823,6 +2891,11 @@ export async function startTui(resumed?: Session): Promise<void> {
       }
       return;
     }
+    if (pendingInspect && key.name === "r" && !composer.plainText.trim() && !draftImages.length) {
+      key.preventDefault();
+      dumpRaw(pendingInspect.id);
+      return;
+    }
     if (
       pendingInspect &&
       key.name === "return" &&
@@ -2878,14 +2951,16 @@ export async function startTui(resumed?: Session): Promise<void> {
       cancelQueuedEdit();
       return;
     }
-    const textBeforeCursor = composer.plainText.slice(0, composer.cursorOffset);
-    const textAfterCursor = composer.plainText.slice(composer.cursorOffset);
-    const atFirstLine = !textBeforeCursor.includes("\n");
-    const atLastLine = !textAfterCursor.includes("\n");
+    const { visualRow } = composer.visualCursor;
+    const { offsetY } = composer.editorView.getViewport();
+    const visualLine = visualRow + offsetY;
+    const atFirstVisualLine = visualLine === 0;
+    const atLastVisualLine =
+      visualLine >= composer.editorView.getTotalVirtualLineCount() - 1;
     if (
       completionChoices.length > 0 &&
       (key.name === "up" || key.name === "down") &&
-      (key.name === "up" ? atFirstLine : atLastLine)
+      (key.name === "up" ? atFirstVisualLine : atLastVisualLine)
     ) {
       key.preventDefault();
       moveCompletion(key.name === "down" ? 1 : -1);
@@ -2895,7 +2970,7 @@ export async function startTui(resumed?: Session): Promise<void> {
       (key.name === "up" || key.name === "down") &&
       !key.ctrl &&
       !key.alt &&
-      (key.name === "up" ? atFirstLine : atLastLine)
+      (key.name === "up" ? atFirstVisualLine : atLastVisualLine)
     ) {
       const history = messages
         .filter((message) => message.role === "user")
@@ -2986,8 +3061,8 @@ export async function startTui(resumed?: Session): Promise<void> {
   footer.add(activitySpacer);
   footer.add(completionView);
   footer.add(approvalBox);
-  footer.add(queuedView);
   footer.add(todosView);
+  footer.add(queuedView);
   inputBox.add(composer);
   footer.add(inputBox);
   footer.add(status);
