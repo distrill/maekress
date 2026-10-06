@@ -1304,7 +1304,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     }
   }
 
-  // Model catalogs across providers; failures cache a fallback so retries re-fetch.
+  // Model catalogs across configured providers; failures cache a fallback so retries re-fetch.
   const allModels = async (): Promise<
     Array<{
       id: string;
@@ -1316,6 +1316,13 @@ export async function startTui(resumed?: Session): Promise<void> {
   > => {
     const results = await Promise.all(
       providers.map(async (provider) => {
+        let configured = false;
+        try {
+          configured = await provider.isConfigured();
+        } catch {
+          return [];
+        }
+        if (!configured) return [];
         try {
           const models = await providerCatalog(provider.id);
           return models.map((model) => ({
