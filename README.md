@@ -29,24 +29,36 @@ includes the necessary runtime flags.
 
 ## Install and run
 
+Install globally so `maekress` works from any project directory:
+
+```sh
+npm install --global maekress
+```
+
+Then run it from the project you want the agent to work in:
+
+```sh
+cd /path/to/your-project
+maekress
+```
+
+To develop from a clone, link it globally instead:
+
 ```sh
 git clone <your-fork-url> maekress
 cd maekress
 npm install
-npm start
+npm link
 ```
 
-Run from the project you want the agent to work in. To restore the most recent session:
+To restore the most recent session, run `maekress restore`. To restore a specific
+session:
 
 ```sh
-npm start -- restore
+maekress restore <session_id>
 ```
 
-To restore a specific session:
-
-```sh
-npm start -- restore <session_id>
-```
+The CLI always uses your current directory as its project root.
 
 ## Connect a provider
 

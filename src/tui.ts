@@ -90,6 +90,9 @@ const systemPrompt = `You are a skilled software engineer and creative coding as
 Workflow:
 - Read before you write. Before editing a file, read it (or the relevant section) so your edits are accurate. Use grep to find definitions, call sites, and related code before making changes that touch multiple files.
 - Plan multi-step work. For tasks that span more than a couple of files, outline your approach in a few bullet points first. For single-file fixes, just do it.
+- Check in before substantial implementation. For complex, broad, multi-phase, or ambiguous work, present a concise high-level approach and wait for the user's approval before editing project files or beginning implementation. Do not treat the request itself as approval to execute the proposed plan.
+- A request to create a plan, roadmap, design, or collaboration markdown file is a request for that artifact only, not authorization to start the work it describes. After approval, create or update the requested planning artifact and stop unless the user explicitly asks to proceed with implementation.
+- Continue without a check-in only for clearly bounded, simple, or trivial changes where the intended approach is evident. If uncertain whether work is substantial, check in.
 - Verify after changes. After modifying code, run the project's tests or build command (if one exists) to confirm nothing broke. If there are no tests, at minimum check that the syntax is valid.
 - Match existing style. Follow the conventions already in the codebase: naming, formatting, patterns. Don't introduce new abstractions, wrappers, or patterns unless the task calls for it.
 - Keep changes minimal. Do exactly what was asked. Don't refactor surrounding code, add speculative features, or "improve" things that weren't part of the request.
@@ -288,7 +291,15 @@ export async function startTui(resumed?: Session): Promise<void> {
     const styledTranscriptLine = (line: string): string | StyledText => {
       const firstBorder = line.indexOf("│");
       const lastBorder = line.lastIndexOf("│");
-      if (firstBorder < 0 || lastBorder <= firstBorder || !color) return line;
+      if (firstBorder < 0 || lastBorder <= firstBorder || !color) {
+        const id = / \[\d{3}\] /.exec(line);
+        if (!id || id.index === undefined) return line;
+        return new StyledText([
+          { __isChunk: true, text: line.slice(0, id.index), fg: RGBA.fromHex(transcriptBorder) },
+          { __isChunk: true, text: id[0], fg: RGBA.fromHex(transcriptColors.tool) },
+          { __isChunk: true, text: line.slice(id.index + id[0].length), fg: RGBA.fromHex(transcriptBorder) },
+        ]);
+      }
       const contentStart = Math.min(line.length, firstBorder + 2);
       const contentEnd = Math.max(contentStart, lastBorder - 1);
       return new StyledText([
@@ -429,11 +440,20 @@ export async function startTui(resumed?: Session): Promise<void> {
       const firstBorder = line.indexOf("│");
       const lastBorder = line.lastIndexOf("│");
       if (firstBorder < 0 || lastBorder <= firstBorder) {
-        chunks.push({
-          __isChunk: true,
-          text: line,
-          fg: RGBA.fromHex(transcriptBorder),
-        });
+        const id = / \[\d{3}\] /.exec(line);
+        if (!id || id.index === undefined) {
+          chunks.push({
+            __isChunk: true,
+            text: line,
+            fg: RGBA.fromHex(transcriptBorder),
+          });
+        } else {
+          chunks.push(
+            { __isChunk: true, text: line.slice(0, id.index), fg: RGBA.fromHex(transcriptBorder) },
+            { __isChunk: true, text: id[0], fg: RGBA.fromHex(transcriptColors.tool) },
+            { __isChunk: true, text: line.slice(id.index + id[0].length), fg: RGBA.fromHex(transcriptBorder) },
+          );
+        }
         return;
       }
       const contentStart = Math.min(line.length, firstBorder + 2);
@@ -1137,7 +1157,7 @@ export async function startTui(resumed?: Session): Promise<void> {
     activityView.content = workingTimer
       ? `${frames[workingFrame++ % frames.length]} ${workingPhase} · Esc to stop${lastEventAt === undefined ? "" : ` · ${elapsed(performance.now() - lastEventAt)}`}`
       : "";
-    activityView.fg = subagentActive ? transcriptColors.subagent : "#E0DEF4";
+    activityView.fg = "#E0DEF4";
     pendingToolView.fg = subagentActive
       ? transcriptColors.subagent
       : transcriptColors.tool;
@@ -1453,7 +1473,10 @@ export async function startTui(resumed?: Session): Promise<void> {
 
   function resizeComposer(): void {
     if (!composer) return;
-    const rows = process.stdout.rows || 24;
+    // `height` is the split-footer viewport and shrinks as `footerHeight`
+    // grows. Use the full terminal dimensions to avoid feeding footer sizing
+    // back into itself during startup and tmux pane changes.
+    const rows = renderer.terminalHeight || process.stdout.rows || 24;
     inputBox.width = inputWidth();
     if (pendingDraft) {
       const box = pendingUserBox(
@@ -3067,6 +3090,7 @@ export async function startTui(resumed?: Session): Promise<void> {
   footer.add(inputBox);
   footer.add(status);
   renderer.root.add(footer);
+  resizeComposer();
   renderer.on("resize", resizeComposer);
   renderer.setFrameCallback(async () => {
     if (!statusClosed) resizeComposer();

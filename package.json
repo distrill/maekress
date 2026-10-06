@@ -1,8 +1,14 @@
 {
-  "name": "maekress-harness",
+  "name": "maekress",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
+  "bin": {
+    "maekress": "bin/maekress.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/"
+  ],
   "scripts": {
     "start": "node --experimental-ffi --experimental-strip-types src/index.ts"
   },
